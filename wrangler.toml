@@ -1,0 +1,11 @@
+name = "wisp-worker"
+main = "src/wisp-entry.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Note: Each concurrent TCP stream counts as one subrequest.
+# Free tier: ~50 subrequests per request. Paid tier: ~1000.
+# Workers do NOT support UDP — only TCP streams are proxied.
+
+[observability]
+enabled = true
