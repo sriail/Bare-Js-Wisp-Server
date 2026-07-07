@@ -3,6 +3,7 @@ Exactly what it is, a Light Wisp Server (No Node.js, Just pure JS and Cloudflare
 
 ## Deploy
 Use the Button Below to Deploy To Cloudflare
+
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sriail/Light-Wisp-Server)
 
 ## Stability and Notes
