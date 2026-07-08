@@ -1,8 +1,15 @@
 // wisp-server.js
 // Wisp server implementation for Cloudflare Workers.
-// Manages WebSocket connections, stream lifecycle, and TCP proxying via cloudflare:sockets.
+// Manages WebSocket connections, the Wisp v1/v2 handshake, stream lifecycle,
+// and delegates TCP proxying to the TcpBridge (wisp-tcp.js).
+//
+// Architecture:
+//   WebSocket (inbound) ←→ WispServer (packet routing) ←→ TcpBridge (outbound TCP)
+//
+// The WispServer handles protocol-level concerns (handshake, packet parsing,
+// stream management) while TcpBridge handles the TCP connection lifecycle and
+// flow control. This separation ensures a stable routing pipeline.
 
-import { connect } from "cloudflare:sockets";
 import {
   PacketType,
   StreamType,
@@ -10,158 +17,97 @@ import {
   ExtensionID,
   parsePacket,
   parseConnectPayload,
-  parseClosePayload,
   parseInfoPayload,
   buildContinuePacket,
   buildClosePacket,
   buildDataPacket,
   buildInfoPacket,
 } from "./wisp-protocol.js";
+import { TcpBridge, STREAM_BUFFER_SIZE } from "./wisp-tcp.js";
 
-// ─── Configuration ───────────────────────────────────────────────────────────
+// ─── Protocol Version ────────────────────────────────────────────────────────
 
-const STREAM_BUFFER_SIZE = 128;       // Max packets buffered per stream
-const CONTINUE_INTERVAL = 64;          // Send CONTINUE every N processed packets (buffer_size / 2)
 const WISP_MAJOR_VERSION = 2;
 const WISP_MINOR_VERSION = 0;
-const MAX_QUEUE_SIZE = STREAM_BUFFER_SIZE * 2; // Hard limit to prevent unbounded growth
 
 // ─── WispStream ──────────────────────────────────────────────────────────────
 
+/**
+ * Represents a single Wisp stream and its associated TCP connection.
+ * Acts as a thin adapter between the WispServer (WebSocket protocol) and
+ * the TcpBridge (TCP socket management).
+ */
 class WispStream {
-  constructor(streamId, server, hostname, port) {
+  /**
+   * @param {number} streamId - Wisp stream ID (must be > 0)
+   * @param {WispServer} server - Parent Wisp server instance
+   * @param {string} hostname - Destination hostname
+   * @param {number} port - Destination port
+   * @param {ExecutionContext|null} ctx - Workers execution context for waitUntil
+   */
+  constructor(streamId, server, hostname, port, ctx) {
     this.streamId = streamId;
     this.server = server;
-    this.hostname = hostname;
-    this.port = port;
-
-    this.socket = null;
-    this.writer = null;
-    this.reader = null;
-
+    this.ctx = ctx;
     this.closed = false;
-    this.writing = false;
-    this.packetsReceived = 0;
 
-    this.writeQueue = [];
+    // Create the TCP bridge with callbacks that wire back into the Wisp protocol
+    this.bridge = new TcpBridge(
+      streamId,
+      hostname,
+      port,
+      {
+        // TCP → WebSocket: forward data from TCP to the client as DATA packets
+        onData: (data) => {
+          server.send(buildDataPacket(streamId, data));
+        },
+        // TCP closed: notify the client with a CLOSE packet (unless silent)
+        onClose: (reason) => {
+          this._onBridgeClose(reason);
+        },
+        // Flow control: forward CONTINUE packets to the client
+        onContinue: (remaining) => {
+          server.send(buildContinuePacket(streamId, remaining));
+        },
+      },
+      ctx
+    );
   }
 
   /**
-   * Establish the TCP connection and start proxy loops.
+   * Start the TCP connection. Data can be queued via writeData() before
+   * this completes — it will be flushed once the connection is established.
    */
-  async setup() {
-    try {
-      this.socket = connect(
-        { hostname: this.hostname, port: this.port },
-        { allowHalfOpen: false }
-      );
-      await this.socket.opened;
-    } catch (err) {
-      if (this.closed) return;
-      const reason = this._classifyError(err);
-      this.close(reason);
-      return;
-    }
-
-    // Stream might have been closed while we were connecting
-    if (this.closed) {
-      this.socket.close().catch(() => {});
-      return;
-    }
-
-    this.writer = this.socket.writable.getWriter();
-    this.reader = this.socket.readable.getReader();
-
-    // Start TCP → WebSocket read loop
-    this._readLoop().catch(() => {
-      if (!this.closed) this.close(CloseReason.NetworkError);
-    });
-
-    // Send initial CONTINUE (stream open confirmation)
-    this._sendContinue();
-
-    // Drain any data queued before connection completed
-    this._processWriteQueue();
-  }
-
-  /**
-   * Read from TCP socket and send DATA packets to the WebSocket client.
-   */
-  async _readLoop() {
-    while (true) {
-      const { done, value } = await this.reader.read();
-      if (done) break;
-      if (this.closed) break;
-      this.server.send(buildDataPacket(this.streamId, value));
-    }
-    if (!this.closed) this.close(CloseReason.Voluntary);
+  setup() {
+    this.bridge
+      .connect()
+      .catch(() => {
+        // All errors are handled inside connect() via the onClose callback.
+        // This catch prevents unhandled promise rejections.
+      });
   }
 
   /**
    * Queue data from the client to be written to the TCP socket.
+   * @param {Uint8Array} data
    */
   writeData(data) {
     if (this.closed) return;
-
-    // Prevent unbounded queue growth
-    if (this.writeQueue.length >= MAX_QUEUE_SIZE) {
-      this.close(CloseReason.Throttled);
-      return;
-    }
-
-    this.writeQueue.push(data);
-    this._processWriteQueue();
+    this.bridge.sendData(data);
   }
 
   /**
-   * Process queued data — writes to the TCP socket sequentially.
-   * Called from both writeData() and setup(); guarded by `this.writing`.
-   */
-  async _processWriteQueue() {
-    if (this.writing || !this.writer || this.closed) return;
-    this.writing = true;
-
-    while (this.writeQueue.length > 0 && !this.closed) {
-      const data = this.writeQueue.shift();
-      try {
-        await this.writer.write(data);
-      } catch (err) {
-        this.writing = false;
-        this.close(CloseReason.NetworkError);
-        return;
-      }
-
-      this.packetsReceived++;
-
-      // Periodically send CONTINUE so the client knows it can send more
-      if (this.packetsReceived % CONTINUE_INTERVAL === 0) {
-        this._sendContinue();
-      }
-    }
-
-    this.writing = false;
-  }
-
-  /**
-   * Send a CONTINUE packet with the current buffer remaining.
-   */
-  _sendContinue() {
-    if (this.closed) return;
-    const remaining = Math.max(0, STREAM_BUFFER_SIZE - this.writeQueue.length);
-    this.server.send(buildContinuePacket(this.streamId, remaining));
-  }
-
-  /**
-   * Close the stream and optionally notify the client.
-   * @param {number|null} reason - Close reason code, or null to suppress notification.
+   * Close the stream. If a reason is provided, a CLOSE packet is sent to
+   * the client. The TCP bridge is closed silently.
+   * @param {number|null} reason - Wisp close reason, or null for silent close
    */
   close(reason = null) {
     if (this.closed) return;
     this.closed = true;
 
-    if (this.socket) {
-      this.socket.close().catch(() => {});
-    }
+    // Close the TCP bridge (triggers onClose with null reason, but we're
+    // already marked closed so _onBridgeClose will be a no-op)
+    this.bridge.close();
 
     if (reason !== null) {
       this.server.send(buildClosePacket(this.streamId, reason));
@@ -171,40 +117,48 @@ class WispStream {
   }
 
   /**
-   * Map a connection error to an appropriate Wisp close reason.
+   * Called when the TcpBridge closes (either TCP error or normal EOF).
+   * Sends a CLOSE packet to the client with the appropriate reason.
+   * @param {number|null} reason
+   * @private
    */
-  _classifyError(err) {
-    if (!err) return CloseReason.ConnectionRefused;
-    const msg = (err.message || "").toLowerCase();
-    if (msg.includes("resolve") || msg.includes("dns") || msg.includes("nxdomain") || msg.includes("nodata")) {
-      return CloseReason.UnreachableHost;
+  _onBridgeClose(reason) {
+    // Already closed by close() or previous _onBridgeClose — no-op
+    if (this.closed) return;
+    this.closed = true;
+
+    if (reason !== null) {
+      this.server.send(buildClosePacket(this.streamId, reason));
     }
-    if (msg.includes("timeout") || msg.includes("timed out")) {
-      return CloseReason.ConnectionTimeout;
-    }
-    if (msg.includes("refused") || msg.includes("reset") || msg.includes("econnrefused")) {
-      return CloseReason.ConnectionRefused;
-    }
-    return CloseReason.ConnectionRefused;
+
+    this.server.removeStream(this.streamId);
   }
 }
 
 // ─── WispServer ──────────────────────────────────────────────────────────────
 
+/**
+ * Wisp server — manages a single WebSocket connection and all streams
+ * multiplexed over it.
+ */
 export class WispServer {
   /**
    * @param {WebSocket} ws - Server-side WebSocket from WebSocketPair
-   * @param {string} path - URL pathname
-   * @param {number} wispVersion - 1 or 2, determined by Sec-WebSocket-Protocol header
+   * @param {string} path - URL pathname (for potential gatekeeping)
+   * @param {number} wispVersion - 1 or 2, determined by Sec-WebSocket-Protocol
+   * @param {ExecutionContext|null} ctx - Workers execution context
    */
-  constructor(ws, path, wispVersion) {
+  constructor(ws, path, wispVersion, ctx) {
     this.ws = ws;
     this.path = path;
     this.wispVersion = wispVersion;
+    this.ctx = ctx;
     this.streams = new Map();
     this.handshakeComplete = false;
     this.extensions = [];
   }
+
+  // ─── Lifecycle ────────────────────────────────────────────────────────────
 
   /**
    * Accept the WebSocket and begin the Wisp handshake.
@@ -217,7 +171,9 @@ export class WispServer {
     this.extensions = [
       {
         id: ExtensionID.MOTD,
-        metadata: new TextEncoder().encode("Wisp server on Cloudflare Workers — TCP only"),
+        metadata: new TextEncoder().encode(
+          "Wisp server on Cloudflare Workers — TCP only"
+        ),
       },
       {
         id: ExtensionID.StreamOpenConfirmation,
@@ -227,11 +183,12 @@ export class WispServer {
 
     if (this.wispVersion === 2) {
       // V2: send INFO packet first, wait for client INFO, then send CONTINUE
-      this.send(buildInfoPacket(0, WISP_MAJOR_VERSION, WISP_MINOR_VERSION, this.extensions));
+      this.send(
+        buildInfoPacket(0, WISP_MAJOR_VERSION, WISP_MINOR_VERSION, this.extensions)
+      );
     } else {
       // V1: send CONTINUE immediately, no INFO exchange
-      this.send(buildContinuePacket(0, STREAM_BUFFER_SIZE));
-      this.handshakeComplete = true;
+      this._completeHandshake();
     }
 
     this.ws.addEventListener("message", (event) => this._onMessage(event));
@@ -240,7 +197,19 @@ export class WispServer {
   }
 
   /**
+   * Complete the Wisp handshake by sending the initial CONTINUE packet
+   * with stream ID 0. This tells the client the per-stream buffer size.
+   */
+  _completeHandshake() {
+    this.handshakeComplete = true;
+    this.send(buildContinuePacket(0, STREAM_BUFFER_SIZE));
+  }
+
+  // ─── WebSocket I/O ────────────────────────────────────────────────────────
+
+  /**
    * Safely send data on the WebSocket, ignoring errors if already closed.
+   * @param {Uint8Array} data
    */
   send(data) {
     try {
@@ -252,14 +221,16 @@ export class WispServer {
 
   /**
    * Handle incoming WebSocket messages.
+   * @param {MessageEvent} event
    */
   _onMessage(event) {
-    // Ignore text frames
+    // Ignore text frames — Wisp uses binary only
     if (typeof event.data === "string") return;
 
-    const data = event.data instanceof Uint8Array
-      ? event.data
-      : new Uint8Array(event.data);
+    const data =
+      event.data instanceof Uint8Array
+        ? event.data
+        : new Uint8Array(event.data);
 
     // Minimum packet size: 1 byte type + 4 bytes stream ID
     if (data.byteLength < 5) return;
@@ -271,50 +242,59 @@ export class WispServer {
       return; // Malformed packet — ignore
     }
 
-    // Handle handshake phase
+    // ─── Handshake Phase ──────────────────────────────────────────────────
     if (!this.handshakeComplete) {
       if (packet.type === PacketType.INFO) {
+        // V2 handshake: client sent INFO, process it and complete handshake
         this._handleClientInfo(packet);
         return;
       }
-      // Client sent non-INFO before handshake completed — treat as V1
       if (packet.type === PacketType.CONNECT) {
-        this.handshakeComplete = true;
+        // Client sent CONNECT before completing handshake.
+        // This can happen with impatient V2 clients or V1 fallback.
+        // Complete the handshake first (sends initial CONTINUE), then
+        // process the CONNECT. This ensures the client always receives
+        // the initial buffer size via the stream-ID-0 CONTINUE.
+        this._completeHandshake();
         this._handleConnect(packet);
         return;
       }
+      // Ignore other packet types during handshake
       return;
     }
 
-    // Route established-connection packets
+    // ─── Established Phase ────────────────────────────────────────────────
     try {
       this._routePacket(packet);
     } catch (err) {
-      // Ignore routing errors
+      // Ignore routing errors to prevent cascading failures
     }
   }
 
   /**
    * Process the client's INFO packet and complete the V2 handshake.
+   * @private
    */
   _handleClientInfo(packet) {
-    // Parse client info (we don't need most of it for this lightweight impl)
     try {
       parseInfoPayload(packet.payload);
     } catch (err) {
+      // Malformed INFO — reject with incompatible extensions
       this.send(buildClosePacket(0, CloseReason.IncompatibleExtensions));
-      try { this.ws.close(); } catch (e) {}
+      try {
+        this.ws.close();
+      } catch (e) {}
       return;
     }
 
-    this.handshakeComplete = true;
-
-    // Send initial CONTINUE with stream ID 0
-    this.send(buildContinuePacket(0, STREAM_BUFFER_SIZE));
+    this._completeHandshake();
   }
 
+  // ─── Packet Routing ───────────────────────────────────────────────────────
+
   /**
-   * Route a packet from the client to the appropriate handler.
+   * Route an established-connection packet to the appropriate handler.
+   * @private
    */
   _routePacket(packet) {
     switch (packet.type) {
@@ -325,7 +305,7 @@ export class WispServer {
         this._handleData(packet);
         break;
       case PacketType.CLOSE:
-        this._handleClose(packet);
+        this._handleClosePacket(packet);
         break;
       case PacketType.CONTINUE:
         // Client should never send CONTINUE — ignore
@@ -338,35 +318,49 @@ export class WispServer {
 
   /**
    * Handle a CONNECT packet — create a new TCP stream.
+   * @private
    */
   _handleConnect(packet) {
-    const { streamType, port, hostname } = parseConnectPayload(packet.payload);
-
-    // Workers only support TCP
-    if (streamType !== StreamType.TCP) {
-      this.send(buildClosePacket(packet.streamId, CloseReason.Unspecified));
+    // Stream ID 0 is reserved for the handshake — reject
+    if (packet.streamId === 0) {
+      this.send(buildClosePacket(0, CloseReason.InvalidInfo));
       return;
     }
 
-    // Validate port
+    const { streamType, port, hostname } = parseConnectPayload(packet.payload);
+
+    // Workers only support TCP — reject UDP with InvalidInfo
+    if (streamType !== StreamType.TCP) {
+      this.send(buildClosePacket(packet.streamId, CloseReason.InvalidInfo));
+      return;
+    }
+
+    // Validate port and hostname
     if (!port || port < 1 || port > 65535 || !hostname) {
       this.send(buildClosePacket(packet.streamId, CloseReason.InvalidInfo));
       return;
     }
 
-    // Close existing stream with the same ID if it exists
+    // Close existing stream with the same ID if it exists (stream reuse)
     if (this.streams.has(packet.streamId)) {
       this.streams.get(packet.streamId).close(null);
     }
 
     // Create and start the new stream
-    const stream = new WispStream(packet.streamId, this, hostname, port);
+    const stream = new WispStream(
+      packet.streamId,
+      this,
+      hostname,
+      port,
+      this.ctx
+    );
     this.streams.set(packet.streamId, stream);
     stream.setup();
   }
 
   /**
    * Handle a DATA packet — forward payload to the TCP socket.
+   * @private
    */
   _handleData(packet) {
     const stream = this.streams.get(packet.streamId);
@@ -375,33 +369,31 @@ export class WispServer {
   }
 
   /**
-   * Handle a CLOSE packet — tear down the stream.
+   * Handle a CLOSE packet from the client — tear down the stream silently.
+   * Per spec: "Any CLOSE packets sent from either the server or the client
+   * must immediately close the associated stream and TCP socket."
+   * @private
    */
-  _handleClose(packet) {
+  _handleClosePacket(packet) {
     const stream = this.streams.get(packet.streamId);
     if (!stream) return;
-    // Client-initiated close — don't send CLOSE back
+    // Client-initiated close — don't send CLOSE back (null reason)
     stream.close(null);
   }
 
+  // ─── Stream Management ────────────────────────────────────────────────────
+
   /**
    * Remove a stream from the active map.
+   * @param {number} streamId
    */
   removeStream(streamId) {
     this.streams.delete(streamId);
   }
 
   /**
-   * Close a specific stream with a reason.
-   */
-  closeStream(streamId, reason) {
-    const stream = this.streams.get(streamId);
-    if (!stream) return;
-    stream.close(reason);
-  }
-
-  /**
-   * Handle WebSocket closure — clean up all streams.
+   * Handle WebSocket closure — clean up ALL streams.
+   * @private
    */
   _onClose() {
     for (const stream of this.streams.values()) {
