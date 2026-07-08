@@ -2,10 +2,10 @@
   <img src="src/wisp-logo.svg" alt="Light Wisp Server" width="200" height="200" />
   <h1>Light Wisp Server</h1>
   <p>Exactly what it is, a Light Wisp Server (No Node.js, Just pure JS and Cloudflare Workers)</p>
+  <br />
 </div>
 
-<br />
-<br />
+
 ## Deploy
 Use the Button Below to Deploy To Cloudflare
 
