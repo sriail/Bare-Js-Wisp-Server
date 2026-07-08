@@ -20,9 +20,11 @@
 </div>
 
 <div align="center">
-  <ul style="display: inline-block; text-align: left; list-style-position: inside; padding-left: 0;">
-    <li><input type="checkbox" disabled /> Add TCP support (grab tcp in some other way and send it out as alt udp streams to the client, or just wait for them to add it natively???)</li>
-    <li><input type="checkbox" disabled /> Add Domain Mirroring ( Can access on alt Cloudflare domains for the worker, may already work?)</li>
-    <li><input type="checkbox" disabled /> Add Rate Limiting in editable JS File.</li>
-  </ul>
+<div align="left" style="display: inline-block;">
+
+- [ ] Add TCP support (grab tcp in some other way and send it out as alt udp streams to the client, or just wait for them to add it natively???)
+- [ ] Add Domain Mirroring ( Can access on alt Cloudflare domains for the worker, may already work?)
+- [ ] Add Rate Limiting in editable JS File.
+
+</div>
 </div>
