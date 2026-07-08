@@ -1,3 +1,6 @@
+
+<img src="src/wisp-logo.svg" alt="Light Wisp Server" width="200" height="200" />
+
 # Light Wisp Server
 Exactly what it is, a Light Wisp Server (No Node.js, Just pure JS and Cloudflare Workers)
 
