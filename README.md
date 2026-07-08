@@ -2,14 +2,12 @@
   <img src="src/wisp-logo.svg" alt="Light Wisp Server" width="200" height="200" />
   <h1>Light Wisp Server</h1>
   <p>Exactly what it is, a Light Wisp Server (No Node.js, Just pure JS and Cloudflare Workers)</p>
-  <br />
 
   <h2>Deploy</h2>
   <p>Use the Button Below to Deploy To Cloudflare</p>
   <br />
 
   [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sriail/Light-Wisp-Server)
-  <br />
   <br />
 
   <h2>Stability and Notes</h2>
