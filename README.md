@@ -7,7 +7,7 @@
   <p>Use the Button Below to Deploy To Cloudflare</p>
   <br />
 
-  [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sriail/Light-Wisp-Server)
+  [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sriail/Bare-Js-Wisp-Server)
   <br />
 
   <h2>Stability and Notes</h2>
