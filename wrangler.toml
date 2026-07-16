@@ -1,4 +1,4 @@
-name = "wisp-worker"
+name = "bare-js-wisp-server"
 main = "src/wisp-entry.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
