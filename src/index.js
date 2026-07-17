@@ -1,29 +1,30 @@
 // index.js
-
-// Note: you can use this Index.js to lay out the correct Peramiters, 
 'use strict';
 
 export const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Bare JS Wisp server</title>
+    <title>Wisp Server (Test Page)</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        textarea { width: 100%; box-sizing: border-box; }
+        .row { margin-bottom: 10px; }
+    </style>
 </head>
 <body>
-    <h2>Example Wisp Request</h2>
-    <div>
+    <h2>Send A Test Request</h2>
+    <div class="row">
         <label>Target Host: </label>
         <input type="text" id="host" value="example.com" style="width: 300px;">
         <button id="sendBtn">Send Request</button>
     </div>
     
-    <br>
-
     <h3>Log:</h3>
-    <textarea id="log" rows="10" style="width: 100%; box-sizing: border-box;" readonly></textarea>
+    <textarea id="log" rows="10" readonly></textarea>
 
     <h3>Response:</h3>
-    <textarea id="response" rows="20" style="width: 100%; box-sizing: border-box;" readonly></textarea>
+    <textarea id="response" rows="20" readonly></textarea>
 
     <script>
         const logEl = document.getElementById('log');
@@ -44,13 +45,13 @@ export const INDEX_HTML = `<!DOCTYPE html>
         let streamId = 1;
         let handshakeComplete = false;
         let streamOpenConfirmed = false;
-        let pendingData = [];
+        let pendingData = null;
 
         function makePacket(type, sId, payload) {
             const buf = new ArrayBuffer(5 + payload.length);
             const view = new DataView(buf);
             view.setUint8(0, type);
-            view.setUint32(1, sId, true);
+            view.setUint32(1, sId, true); // Little-endian
             new Uint8Array(buf, 5).set(payload);
             return buf;
         }
@@ -110,9 +111,9 @@ export const INDEX_HTML = `<!DOCTYPE html>
                     } else if (sId === streamId && !streamOpenConfirmed) {
                         log('Received CONTINUE on stream ' + sId + '. Socket connected to destination.');
                         streamOpenConfirmed = true;
-                        if (pendingData.length > 0) {
+                        if (pendingData) {
                             sendData(pendingData);
-                            pendingData = [];
+                            pendingData = null;
                         }
                     }
                 } else if (type === packet_types.DATA) {
@@ -126,7 +127,7 @@ export const INDEX_HTML = `<!DOCTYPE html>
             };
 
             ws.onclose = () => log('WebSocket disconnected.');
-            ws.onerror = (err) => log('WebSocket error: ' + err.message);
+            ws.onerror = () => log('WebSocket error.');
         }
 
         sendBtn.onclick = () => {
@@ -141,8 +142,6 @@ export const INDEX_HTML = `<!DOCTYPE html>
             
             if (!ws || ws.readyState !== 1) {
                 connectWs();
-                // Wait for handshake and connect sequence to happen automatically 
-                // once handshakeComplete becomes true.
                 const interval = setInterval(() => {
                     if (handshakeComplete) {
                         clearInterval(interval);
@@ -150,7 +149,6 @@ export const INDEX_HTML = `<!DOCTYPE html>
                     }
                 }, 100);
             } else {
-                // If already connected, just open a new stream
                 sendConnect(host);
             }
         };
