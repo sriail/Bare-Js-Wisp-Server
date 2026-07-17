@@ -14,14 +14,14 @@ import {
   close_reasons
 } from './server.js';
 
-export class Client {
+export class WispClient {
   constructor(ws) {
     this.ws = ws;
     this.streams = new Map();
     this.handshakeComplete = false;
   }
 
-  async initialize() {
+  async run() {
     return new Promise((resolve) => {
       this.ws.addEventListener('message', (event) => this.onMessage(event));
       this.ws.addEventListener('close', () => { this.cleanup(); resolve(); });
@@ -115,9 +115,9 @@ export class Client {
   create_stream(stream_id, type, hostname, port) {
     if (stream_id === 0 || this.streams.has(stream_id)) return;
 
-    const stream = new ServerStream(stream_id, this);
+    const stream = new ServerStream(stream_id, this, hostname, port, type);
     this.streams.set(stream_id, stream);
-    stream.connect(type, port, hostname);
+    stream.setup();
   }
 
   async close_stream(stream_id, reason = null, quiet = false) {
