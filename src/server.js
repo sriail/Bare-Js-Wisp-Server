@@ -53,27 +53,38 @@ export class ServerStream {
     this.closed = false;
   }
 
-  // setup() is fired asynchronously and does not block the WS event loop
   async setup() {
     if (this.type === stream_types.UDP) {
-      // Cloudflare Workers do not support outbound UDP via cloudflare:sockets
       await this.conn.close_stream(this.stream_id, close_reasons.InvalidInfo);
       return;
     }
 
     try {
-      // Initialize TCP Socket. We DO NOT await socket.opened here.
-      // The writer.write() call later will automatically buffer until connected.
       this.socket = connect({ hostname: this.hostname, port: Number(this.port) });
       this.writer = this.socket.writable.getWriter();
+      // CRITICAL FIX: Await socket establishment to catch connection errors.
+      // setup() runs in the background, so this does not block the WS event loop.
+      await this.socket.opened;
     } catch (err) {
-      await this.conn.close_stream(this.stream_id, close_reasons.UnreachableHost);
+      console.error("Socket connect failed:", err);
+      let reason = close_reasons.UnreachableHost;
+      if (err?.message?.includes("free plan") || err?.message?.includes("not available")) {
+        reason = close_reasons.InvalidInfo;
+      } else if (err?.cause?.code === 'ECONNREFUSED') {
+        reason = close_reasons.ConnRefused;
+      }
+      await this.conn.close_stream(this.stream_id, reason);
       return;
     }
 
-    // Start proxy tasks in the background
-    this.tcp_to_ws().catch(() => this.close(close_reasons.NetworkError));
-    this.ws_to_tcp().catch(() => this.close(close_reasons.NetworkError));
+    this.tcp_to_ws().catch((err) => {
+      console.error("tcp_to_ws error:", err);
+      this.close(close_reasons.NetworkError);
+    });
+    this.ws_to_tcp().catch((err) => {
+      console.error("ws_to_tcp error:", err);
+      this.close(close_reasons.NetworkError);
+    });
   }
 
   async tcp_to_ws() {
@@ -107,7 +118,6 @@ export class ServerStream {
       this.packets_sent++;
       if (this.packets_sent % (ServerStream.buffer_size / 2) !== 0) continue;
       
-      // Send CONTINUE packet to update client's buffer remaining
       const payload = new Uint8Array(4);
       new DataView(payload.buffer).setUint32(0, ServerStream.buffer_size - this.send_buffer.size, true);
       this.conn.send_packet(packet_types.CONTINUE, this.stream_id, payload.buffer);
@@ -115,7 +125,6 @@ export class ServerStream {
     await this.close();
   }
 
-  // Called by the WS handler synchronously
   put_data(data) {
     if (this.send_buffer.size >= ServerStream.buffer_size) {
       this.conn.close_stream(this.stream_id, close_reasons.ConnThrottled);
