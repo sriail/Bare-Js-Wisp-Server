@@ -5,7 +5,7 @@ export const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Wisp Server (Test Page)</title>
+    <title>Wisp Proxy Tester</title>
     <style>
         body { font-family: monospace; padding: 20px; }
         textarea { width: 100%; box-sizing: border-box; }
@@ -13,7 +13,7 @@ export const INDEX_HTML = `<!DOCTYPE html>
     </style>
 </head>
 <body>
-    <h2>Send A Test Request</h2>
+    <h2>Wisp Local Relay Tester (Free Plan HTTP Mode)</h2>
     <div class="row">
         <label>Target Host: </label>
         <input type="text" id="host" value="example.com" style="width: 300px;">
@@ -57,7 +57,6 @@ export const INDEX_HTML = `<!DOCTYPE html>
         }
 
         function sendInfo() {
-            // Ext 0x05 (Stream Open Confirmation)
             const payload = new Uint8Array(7);
             const view = new DataView(payload.buffer);
             view.setUint8(0, 2); // Major
@@ -132,7 +131,11 @@ export const INDEX_HTML = `<!DOCTYPE html>
 
         sendBtn.onclick = () => {
             respEl.value = '';
-            const host = document.getElementById('host').value;
+            let host = document.getElementById('host').value;
+            
+            // Clean the URL to just the hostname
+            host = host.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
+            
             streamId = Math.floor(Math.random() * 1000) + 1; // Random stream ID
             handshakeComplete = false;
             streamOpenConfirmed = false;
