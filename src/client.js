@@ -62,14 +62,15 @@ export class WispClient {
         if (payload.length < 3) return;
         
         const stream_type = payload[0];
-        // FIX: Port is at offset 6 in the original buffer (5 byte header + 1 byte stream type)
+        // Offset 6 in the original buffer (5 byte header + 1 byte stream type)
         const port = view.getUint16(6, true); 
         const hostname = new TextDecoder().decode(payload.slice(3)).trim();
         
         const stream = new ServerStream(stream_id, this, hostname, port, stream_type);
         this.streams.set(stream_id, stream);
         
-        stream.setup();
+        // Fire and forget. setup() runs in the background, preserving CPU time.
+        stream.setup().catch(err => console.error("Stream setup failed:", err));
         return;
       }
 
@@ -77,19 +78,22 @@ export class WispClient {
       if (!stream) return;
 
       if (type === packet_types.DATA) {
+        // Synchronously push to queue. Zero await blocking.
         stream.put_data(payload);
       } else if (type === packet_types.CLOSE) {
-        this.close_stream(stream_id, true);
+        this.close_stream(stream_id, null, true);
       }
     } catch (error) {
       // Prevent malformed packets from crashing the worker
+      console.error("onMessage error:", error);
     }
   }
 
-  async close_stream(stream_id, quiet = false) {
+  // FIX: Added `reason` parameter to properly pass close reasons to the client
+  async close_stream(stream_id, reason = null, quiet = false) {
     const stream = this.streams.get(stream_id);
     if (!stream) return;
-    await stream.close(quiet ? null : close_reasons.Unknown);
+    await stream.close(quiet ? null : reason);
     this.streams.delete(stream_id);
   }
 
