@@ -16,16 +16,14 @@ export class WispClient {
       this.ws.addEventListener('error', () => { this.cleanup(); resolve(); });
       
       // Spec V1.2: Immediately send a CONTINUE packet on stream ID 0 
-      // containing the initial buffer size.
       const payload = new ArrayBuffer(4);
       new DataView(payload).setUint32(0, ServerStream.buffer_size, true);
       this.send_packet(packet_types.CONTINUE, 0, payload);
     });
   }
 
-  // Highly optimized packet sender using raw ArrayBuffers
   send_packet(type, stream_id, payload_buffer) {
-    if (this.ws.readyState !== 1) return; // 1 = OPEN
+    if (this.ws.readyState !== 1) return;
     const payload_len = payload_buffer ? payload_buffer.byteLength : 0;
     const buf = new ArrayBuffer(5 + payload_len);
     const view = new DataView(buf);
@@ -41,7 +39,6 @@ export class WispClient {
     this.ws.send(buf);
   }
 
-  // Async to handle Blob conversion, but parsing logic is entirely synchronous
   async onMessage(event) {
     let buf;
     if (event.data instanceof ArrayBuffer) {
@@ -65,13 +62,13 @@ export class WispClient {
         if (payload.length < 3) return;
         
         const stream_type = payload[0];
-        const port = view.getUint16(5, true); // Offset 5 in the original buf
+        // FIX: Port is at offset 6 in the original buffer (5 byte header + 1 byte stream type)
+        const port = view.getUint16(6, true); 
         const hostname = new TextDecoder().decode(payload.slice(3)).trim();
         
         const stream = new ServerStream(stream_id, this, hostname, port, stream_type);
         this.streams.set(stream_id, stream);
         
-        // Fire and forget. setup() runs in the background, preserving CPU time.
         stream.setup();
         return;
       }
@@ -80,7 +77,6 @@ export class WispClient {
       if (!stream) return;
 
       if (type === packet_types.DATA) {
-        // Synchronously push to queue. Zero await blocking.
         stream.put_data(payload);
       } else if (type === packet_types.CLOSE) {
         this.close_stream(stream_id, true);
