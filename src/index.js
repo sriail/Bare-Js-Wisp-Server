@@ -5,10 +5,15 @@ export const INDEX_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Wisp Proxy Tester</title>
+    <title>Wisp V1.2 Proxy Tester</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        textarea { width: 100%; box-sizing: border-box; }
+        .row { margin-bottom: 10px; }
+    </style>
 </head>
 <body>
-    <h2>Wisp Local Relay Tester (Free Plan HTTP Mode)</h2>
+    <h2>Wisp V1.2 Local Relay Tester</h2>
     <div class="row">
         <label>Target Host: </label>
         <input type="text" id="host" value="example.com" style="width: 300px;">
@@ -33,13 +38,12 @@ export const INDEX_HTML = `<!DOCTYPE html>
         }
 
         const packet_types = {
-            CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04, INFO: 0x05
+            CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04
         };
 
         let ws;
         let streamId = 1;
         let handshakeComplete = false;
-        let streamOpenConfirmed = false;
         let pendingData = null;
 
         function makePacket(type, sId, payload) {
@@ -49,17 +53,6 @@ export const INDEX_HTML = `<!DOCTYPE html>
             view.setUint32(1, sId, true); // Little-endian
             new Uint8Array(buf, 5).set(payload);
             return buf;
-        }
-
-        function sendInfo() {
-            const payload = new Uint8Array(7);
-            const view = new DataView(payload.buffer);
-            view.setUint8(0, 2); // Major
-            view.setUint8(1, 1); // Minor
-            view.setUint8(2, 0x05); // Ext ID
-            view.setUint32(3, 0, true); // Ext Length
-            ws.send(makePacket(packet_types.INFO, 0, payload));
-            log('Sent client INFO packet');
         }
 
         function sendConnect(host) {
@@ -72,20 +65,23 @@ export const INDEX_HTML = `<!DOCTYPE html>
             
             ws.send(makePacket(packet_types.CONNECT, streamId, payload));
             log('Sent CONNECT packet for ' + host + ':80 (Stream ID: ' + streamId + ')');
-        }
-
-        function sendData(data) {
-            ws.send(makePacket(packet_types.DATA, streamId, data));
-            log('Sent HTTP GET request as DATA packet');
+            
+            // In V1.2, we can send DATA immediately, even before the TCP socket connects.
+            // The server will buffer it.
+            if (pendingData) {
+                ws.send(makePacket(packet_types.DATA, streamId, pendingData));
+                log('Sent HTTP GET request as DATA packet');
+                pendingData = null;
+            }
         }
 
         function connectWs() {
             const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/';
             log('Connecting to ' + wsUrl);
-            ws = new WebSocket(wsUrl, 'wisp-v2');
+            ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
 
-            ws.onopen = () => log('WebSocket connected. Waiting for server INFO...');
+            ws.onopen = () => log('WebSocket connected. Waiting for initial CONTINUE (handshake)...');
 
             ws.onmessage = (event) => {
                 const buf = new Uint8Array(event.data);
@@ -95,20 +91,10 @@ export const INDEX_HTML = `<!DOCTYPE html>
                 const sId = view.getUint32(1, true);
                 const payload = buf.slice(5);
 
-                if (type === packet_types.INFO) {
-                    log('Received server INFO. Sending client INFO...');
-                    sendInfo();
-                } else if (type === packet_types.CONTINUE) {
+                if (type === packet_types.CONTINUE) {
                     if (sId === 0 && !handshakeComplete) {
                         log('Received CONTINUE on stream 0. Handshake complete!');
                         handshakeComplete = true;
-                    } else if (sId === streamId && !streamOpenConfirmed) {
-                        log('Received CONTINUE on stream ' + sId + '. Socket connected to destination.');
-                        streamOpenConfirmed = true;
-                        if (pendingData) {
-                            sendData(pendingData);
-                            pendingData = null;
-                        }
                     }
                 } else if (type === packet_types.DATA) {
                     const text = new TextDecoder().decode(payload);
@@ -128,12 +114,11 @@ export const INDEX_HTML = `<!DOCTYPE html>
             respEl.value = '';
             let host = document.getElementById('host').value;
             
-            // Clean the URL to just the hostname
+            // Sanitize URL to pure hostname
             host = host.replace(/^https?:\/\//, '').split('/')[0].split(':')[0];
             
-            streamId = Math.floor(Math.random() * 1000) + 1; // Random stream ID
+            streamId = Math.floor(Math.random() * 1000) + 1;
             handshakeComplete = false;
-            streamOpenConfirmed = false;
             
             const httpReq = 'GET / HTTP/1.1\\r\\nHost: ' + host + '\\r\\nConnection: close\\r\\n\\r\\n';
             pendingData = new TextEncoder().encode(httpReq);
@@ -147,6 +132,7 @@ export const INDEX_HTML = `<!DOCTYPE html>
                     }
                 }, 100);
             } else {
+                // If already connected, just open a new stream
                 sendConnect(host);
             }
         };
