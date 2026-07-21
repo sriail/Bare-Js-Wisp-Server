@@ -100,6 +100,9 @@ export const INDEX_HTML = `<!DOCTYPE html>
                 } else if (type === packet_types.CLOSE) {
                     const reason = payload.length > 0 ? payload[0] : 0;
                     log('Received CLOSE packet. Reason: 0x' + reason.toString(16));
+                    if (reason === 0x41) {
+                        log('NOTE: 0x41 indicates the Cloudflare Worker is on the Free Plan, which blocks outbound TCP sockets.');
+                    }
                     log('Stream closed.');
                 }
             };
