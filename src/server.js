@@ -62,27 +62,35 @@ export class ServerStream {
     try {
       this.socket = connect({ hostname: this.hostname, port: Number(this.port) });
       this.writer = this.socket.writable.getWriter();
-      // CRITICAL FIX: Await socket establishment to catch connection errors.
-      // setup() runs in the background, so this does not block the WS event loop.
       await this.socket.opened;
     } catch (err) {
       console.error("Socket connect failed:", err);
-      let reason = close_reasons.UnreachableHost;
-      if (err?.message?.includes("free plan") || err?.message?.includes("not available")) {
-        reason = close_reasons.InvalidInfo;
+      let reason = close_reasons.UnreachableHost; // 0x42
+      
+      // Send the exact error message back to the client's response box for debugging
+      const err_msg = new TextEncoder().encode("SERVER ERROR: connect(" + this.hostname + ":" + this.port + ") failed: " + (err?.message || err?.cause?.code || JSON.stringify(err)));
+      this.conn.send_packet(packet_types.DATA, this.stream_id, err_msg.buffer);
+      
+      if (err?.message?.includes("free plan") || err?.message?.includes("not available") || err instanceof TypeError) {
+        reason = close_reasons.InvalidInfo; // 0x41
       } else if (err?.cause?.code === 'ECONNREFUSED') {
-        reason = close_reasons.ConnRefused;
+        reason = close_reasons.ConnRefused; // 0x44
       }
+      
       await this.conn.close_stream(this.stream_id, reason);
       return;
     }
 
     this.tcp_to_ws().catch((err) => {
       console.error("tcp_to_ws error:", err);
+      const err_msg = new TextEncoder().encode("TCP_TO_WS ERROR: " + (err?.message || JSON.stringify(err)));
+      this.conn.send_packet(packet_types.DATA, this.stream_id, err_msg.buffer);
       this.close(close_reasons.NetworkError);
     });
     this.ws_to_tcp().catch((err) => {
       console.error("ws_to_tcp error:", err);
+      const err_msg = new TextEncoder().encode("WS_TO_TCP ERROR: " + (err?.message || JSON.stringify(err)));
+      this.conn.send_packet(packet_types.DATA, this.stream_id, err_msg.buffer);
       this.close(close_reasons.NetworkError);
     });
   }
@@ -97,6 +105,8 @@ export class ServerStream {
       }
       await this.conn.close_stream(this.stream_id, close_reasons.Voluntary);
     } catch (err) {
+      const err_msg = new TextEncoder().encode("TCP_TO_WS CATCH: " + (err?.message || JSON.stringify(err)));
+      this.conn.send_packet(packet_types.DATA, this.stream_id, err_msg.buffer);
       if (!this.closed) await this.conn.close_stream(this.stream_id, close_reasons.NetworkError);
     } finally {
       try { reader.releaseLock(); } catch(e) {}
@@ -111,6 +121,8 @@ export class ServerStream {
       try {
         await this.writer.write(data);
       } catch (err) {
+        const err_msg = new TextEncoder().encode("WS_TO_TCP WRITE ERROR: " + (err?.message || JSON.stringify(err)));
+        this.conn.send_packet(packet_types.DATA, this.stream_id, err_msg.buffer);
         if (!this.closed) await this.conn.close_stream(this.stream_id, close_reasons.NetworkError);
         break;
       }
