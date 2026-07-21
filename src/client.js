@@ -1,16 +1,12 @@
 // client.js
 'use strict';
 
-import { 
-  FetchStream, WispPacket, WispBuffer, ConnectPayload, DataPayload, 
-  ClosePayload, ContinuePayload, InfoPayload, packet_types, close_reasons
-} from './server.js';
+import { ServerStream, packet_types, stream_types, close_reasons } from './server.js';
 
 export class WispClient {
   constructor(ws) {
     this.ws = ws;
     this.streams = new Map();
-    this.handshakeComplete = false;
   }
 
   async run() {
@@ -18,78 +14,93 @@ export class WispClient {
       this.ws.addEventListener('message', (event) => this.onMessage(event));
       this.ws.addEventListener('close', () => { this.cleanup(); resolve(); });
       this.ws.addEventListener('error', () => { this.cleanup(); resolve(); });
-      this.send_server_info();
+      
+      // Spec V1.2: Immediately send a CONTINUE packet on stream ID 0 
+      // containing the initial buffer size.
+      const payload = new ArrayBuffer(4);
+      new DataView(payload).setUint32(0, ServerStream.buffer_size, true);
+      this.send_packet(packet_types.CONTINUE, 0, payload);
     });
   }
 
-  send_packet(type, stream_id, payload) {
-    if (this.ws.readyState !== 1) return;
-    const packet = new WispPacket({ type, stream_id, payload });
-    this.ws.send(packet.serialize().bytes);
+  // Highly optimized packet sender using raw ArrayBuffers
+  send_packet(type, stream_id, payload_buffer) {
+    if (this.ws.readyState !== 1) return; // 1 = OPEN
+    const payload_len = payload_buffer ? payload_buffer.byteLength : 0;
+    const buf = new ArrayBuffer(5 + payload_len);
+    const view = new DataView(buf);
+    const u8 = new Uint8Array(buf);
+    
+    view.setUint8(0, type);
+    view.setUint32(1, stream_id, true); // Little-endian
+    
+    if (payload_len > 0) {
+      u8.set(new Uint8Array(payload_buffer), 5);
+    }
+    
+    this.ws.send(buf);
   }
 
-  send_server_info() {
-    const ext_buffer = new WispBuffer(5);
-    ext_buffer.view.setUint8(0, 0x05);
-    ext_buffer.view.setUint32(1, 0, true);
-    this.send_packet(packet_types.INFO, 0, new InfoPayload({ major_ver: 2, minor_ver: 1, extensions: ext_buffer }));
-  }
-
+  // Async to handle Blob conversion, but parsing logic is entirely synchronous
   async onMessage(event) {
-    let buffer;
-    if (event.data instanceof ArrayBuffer) buffer = new WispBuffer(new Uint8Array(event.data));
-    else if (event.data instanceof Blob) {
-      const ab = await event.data.arrayBuffer();
-      buffer = new WispBuffer(new Uint8Array(ab));
-    } else return;
-
-    try { this.route_packet(buffer); } catch (error) { /* Malformed packet */ }
-  }
-
-  route_packet(buffer) {
-    if (buffer.size < WispPacket.min_size) return;
-    const packet = WispPacket.parse_all(buffer);
-
-    if (packet.type === packet_types.INFO) {
-      this.handle_client_info();
-      return;
+    let buf;
+    if (event.data instanceof ArrayBuffer) {
+      buf = event.data;
+    } else if (event.data instanceof Blob) {
+      buf = await event.data.arrayBuffer();
+    } else {
+      return; 
     }
 
-    if (packet.type === packet_types.CONNECT) {
-      this.create_stream(packet.stream_id, packet.payload.stream_type, packet.payload.hostname.trim(), packet.payload.port);
-      return;
+    if (buf.byteLength < 5) return;
+    
+    const view = new DataView(buf);
+    const type = view.getUint8(0);
+    const stream_id = view.getUint32(1, true);
+    const payload = new Uint8Array(buf, 5);
+
+    try {
+      if (type === packet_types.CONNECT) {
+        if (stream_id === 0 || this.streams.has(stream_id)) return;
+        if (payload.length < 3) return;
+        
+        const stream_type = payload[0];
+        const port = view.getUint16(5, true); // Offset 5 in the original buf
+        const hostname = new TextDecoder().decode(payload.slice(3)).trim();
+        
+        const stream = new ServerStream(stream_id, this, hostname, port, stream_type);
+        this.streams.set(stream_id, stream);
+        
+        // Fire and forget. setup() runs in the background, preserving CPU time.
+        stream.setup();
+        return;
+      }
+
+      const stream = this.streams.get(stream_id);
+      if (!stream) return;
+
+      if (type === packet_types.DATA) {
+        // Synchronously push to queue. Zero await blocking.
+        stream.put_data(payload);
+      } else if (type === packet_types.CLOSE) {
+        this.close_stream(stream_id, true);
+      }
+    } catch (error) {
+      // Prevent malformed packets from crashing the worker
     }
-
-    const stream = this.streams.get(packet.stream_id);
-    if (!stream) return;
-
-    if (packet.type === packet_types.DATA) stream.put_data(packet.payload.data);
-    else if (packet.type === packet_types.CLOSE) this.close_stream(packet.stream_id, null, true);
   }
 
-  handle_client_info() {
-    if (this.handshakeComplete) return;
-    this.handshakeComplete = true;
-    this.send_packet(packet_types.CONTINUE, 0, new ContinuePayload({ buffer_remaining: FetchStream.buffer_size }));
-  }
-
-  create_stream(stream_id, type, hostname, port) {
-    if (stream_id === 0 || this.streams.has(stream_id)) return;
-    // Uses FetchStream instead of ServerStream
-    const stream = new FetchStream(stream_id, this, hostname, port, type);
-    this.streams.set(stream_id, stream);
-    stream.setup();
-  }
-
-  async close_stream(stream_id, reason = null, quiet = false) {
+  async close_stream(stream_id, quiet = false) {
     const stream = this.streams.get(stream_id);
     if (!stream) return;
-    await stream.close(quiet ? null : reason);
+    await stream.close(quiet ? null : close_reasons.Unknown);
     this.streams.delete(stream_id);
   }
 
   cleanup() {
-    for (const stream of this.streams.values()) stream.close(close_reasons.NetworkError);
+    for (const stream of this.streams.values()) {
+      stream.close(close_reasons.NetworkError);
+    }
     this.streams.clear();
   }
 }
