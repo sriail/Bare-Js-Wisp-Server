@@ -1,7 +1,7 @@
 <div align="center">
   <img src="src/wisp-logo.svg" alt="Light Wisp Server" width="200" height="200" />
   <h1>Bare Js Wisp Server</h1>
-  <p>Exactly what it is, a Light Wisp Server (No Node.js, Just pure JS and Cloudflare Workers via V8)</p>
+  <p>Exactly what it is, a Light Wisp Server (No Node.js, Just pure JS and Cloudflare Workers via V8) Somewhat based on Wisp Js</p>
 
   <h2>Deploy</h2>
   <p>Use the Button Below to Deploy To Cloudflare</p>
