@@ -11,7 +11,7 @@
   <br />
 
   <h2>Stability and Notes On TCP</h2>
-  <p>From what I know, the proxy is very stable. However, Cloudflare can limit the number of request (occasionally subrequest) to 50 for Non-Premium Accounts, and does not support TCP (Meaning only UDP request get fully proxied) which is a Huge issue which i will hopefully patch with some Janky solution.</p>
+  <p>From what I know, the proxy is very stable. However, Cloudflare can limit the number of request (occasionally subrequest) to 50 for Non-Premium Accounts, and does not support TCP (Meaning only UDP request get fully proxied) which is a Huge issue which i will hopefully patch with some Janky solution which i am adding.</p>
   <br />
 
   <h2>Quick Roadmap</h2>
