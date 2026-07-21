@@ -25,8 +25,13 @@
 - [ ] Add Rate Limiting in editable JS File.
 - [ ] Wisp v2.1???
 
+<div align="center">
   <h2>Notes</h2>
+  <p>Because of Cloudflare places a 100,000 request restricton on the connect() Api, the endpoint will not be able to handle tons of trafic daily without the premum subscription
+  (Which hase a limit of 10,000,000 daily request) so it is recomended to host on your owen hardware if possable for maximum preformance.</p>
+  <br />
 <p> Writen By Sriail </p>
-
+  
+</div>
 </div>
 </div>
