@@ -3,5 +3,9 @@ name = "bare-js-wisp-server"
 main = "src/connections.js"
 compatibility_date = "2026-06-16"
 
+[assets]
+directory = "./src"
+binding = "ASSETS"
+
 [observability]
 enabled = true
