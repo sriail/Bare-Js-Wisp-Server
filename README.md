@@ -22,8 +22,9 @@
 
 - [x] Add TCP support (grab tcp in some other way and send it out as alt udp streams to the client, or just wait for them to add it natively???)
 - [x] Add Domain Mirroring ( Can access on alt Cloudflare domains for the worker, may already work?)
-- [ ] Add Rate Limiting in editable JS File. (WIP)
-- [ ] Wisp v2.1???
+- [x] Add Rate Limiting in editable JS File. (WIP)
+- [ ] Wisp v2.1??? (to lazy to add rn)
+- [ ] 
 
 <div align="center">
   <h2>Notes</h2>
