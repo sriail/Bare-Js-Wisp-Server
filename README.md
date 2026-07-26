@@ -24,7 +24,7 @@
 - [x] Add Domain Mirroring ( Can access on alt Cloudflare domains for the worker, may already work?)
 - [x] Add Rate Limiting in editable JS File. (WIP)
 - [ ] Wisp v2.1??? (to lazy to add rn)
-- [ ] 
+- [ ] Add Implamentation.md and a proper Client
 
 <div align="center">
   <h2>Notes</h2>
