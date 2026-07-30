@@ -1,0 +1,1 @@
+// Seed Domains for the crawler to start crawling (Rewrite this whole file with your owen seeds or use .example-seed.txt instead
