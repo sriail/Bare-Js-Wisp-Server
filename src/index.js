@@ -1,30 +1,59 @@
-// index.js
+// crawler.js
 'use strict';
 
-export const INDEX_HTML = `<!DOCTYPE html>
+export const CRAWLER_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Bare Wisp Server</title>
+    <title>Wisp Crawler</title>
 </head>
 <body>
-    <h2>Test This Wisp Endpoint</h2>
-    <div class="row">
-        <label>Target Host: </label>
-        <input type="text" id="host" value="example.com" style="width: 300px;">
-        <button id="sendBtn">Send Request</button>
+    <h2>Wisp Seed Crawler</h2>
+    
+    <div>
+        <label>Upload seeds.txt:</label>
+        <input type="file" id="uploadBtn" accept=".txt">
     </div>
     
-    <h3>Log:</h3>
-    <textarea id="log" rows="10" readonly></textarea>
+    <div style="margin-top: 10px;">
+        <button id="startBtn">Start Crawl</button>
+        <button id="stopBtn">Stop</button>
+        <button id="downloadBtn">Download data.txt</button>
+    </div>
 
-    <h3>Response:</h3>
-    <textarea id="response" rows="20" readonly></textarea>
+    <h3>Status: <span id="spinner">|</span> Pages Crawled: <span id="counter">0</span></h3>
+    
+    <h3>Log:</h3>
+    <textarea id="log" rows="10" readonly style="width: 100%;"></textarea>
 
     <script>
+        // ---COMENT--- UI Element References
         const logEl = document.getElementById('log');
-        const respEl = document.getElementById('response');
-        const sendBtn = document.getElementById('sendBtn');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const counterEl = document.getElementById('counter');
+        const spinnerEl = document.getElementById('spinner');
+
+        // ---COMENT--- Crawler State Variables
+        let ws;
+        let streamId = 1;
+        let handshakeComplete = false;
+        let isCrawling = false;
+        let pagesCrawled = 0;
+        let dataTxt = "";
+        let crawlQueue = [];
+        let crawledUrls = new Set();
+        let activeStreamId = 0;
+        let streamBuffer = "";
+        let currentDomain = "";
+        let spinnerInterval;
+
+        // ---COMENT--- Wisp Protocol Packet Types
+        const packet_types = {
+            CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04
+        };
 
         function log(msg) {
             const time = new Date().toISOString().split('T')[1];
@@ -32,14 +61,18 @@ export const INDEX_HTML = `<!DOCTYPE html>
             logEl.scrollTop = logEl.scrollHeight;
         }
 
-        const packet_types = {
-            CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04
-        };
-
-        let ws;
-        let streamId = 1;
-        let handshakeComplete = false;
-        let pendingData = null;
+        // ---COMENT--- Spinner Animation Logic
+        function startSpinner() {
+            const chars = ['|', '/', '-', '\\'];
+            let i = 0;
+            spinnerInterval = setInterval(() => {
+                spinnerEl.textContent = chars[i++ % chars.length];
+            }, 100);
+        }
+        function stopSpinner() {
+            clearInterval(spinnerInterval);
+            spinnerEl.textContent = 'Idle';
+        }
 
         function makePacket(type, sId, payload) {
             const buf = new ArrayBuffer(5 + payload.length);
@@ -50,31 +83,45 @@ export const INDEX_HTML = `<!DOCTYPE html>
             return buf;
         }
 
-        function sendConnect(host) {
-            const hostBytes = new TextEncoder().encode(host);
-            const payload = new Uint8Array(3 + hostBytes.length);
-            const view = new DataView(payload.buffer);
-            view.setUint8(0, 0x01); // TCP
-            view.setUint16(1, 80, true); // Port 80
-            payload.set(hostBytes, 3);
-            
-            ws.send(makePacket(packet_types.CONNECT, streamId, payload));
-            log('Sent CONNECT packet for ' + host + ':80 (Stream ID: ' + streamId + ')');
-            
-            if (pendingData) {
-                ws.send(makePacket(packet_types.DATA, streamId, pendingData));
-                log('Sent HTTP GET request as DATA packet');
-                pendingData = null;
-            }
+        // ---COMENT--- Attempt to load seeds.txt automatically on page load
+        function loadDefaultSeeds() {
+            fetch('seeds.txt')
+                .then(res => {
+                    if (!res.ok) throw new Error('File not found');
+                    return res.text();
+                })
+                .then(text => {
+                    parseSeeds(text);
+                    log('Successfully loaded local seeds.txt');
+                })
+                .catch(() => log('No local seeds.txt found. Please upload a file.'));
         }
 
+        // ---COMENT--- Handle manual seed file upload
+        uploadBtn.onchange = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                parseSeeds(e.target.result);
+                log('Loaded seeds from uploaded file: ' + file.name);
+            };
+            reader.readAsText(file);
+        };
+
+        function parseSeeds(text) {
+            const urls = text.split('\\n').map(u => u.trim()).filter(u => u.length > 0);
+            crawlQueue = crawlQueue.concat(urls);
+        }
+
+        // ---COMENT--- WebSocket Connection Setup
         function connectWs() {
             const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/';
             log('Connecting to ' + wsUrl);
             ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
 
-            ws.onopen = () => log('WebSocket connected. Waiting for initial CONTINUE (handshake)...');
+            ws.onopen = () => log('WebSocket connected. Waiting for handshake...');
 
             ws.onmessage = (event) => {
                 const buf = new Uint8Array(event.data);
@@ -86,49 +133,157 @@ export const INDEX_HTML = `<!DOCTYPE html>
 
                 if (type === packet_types.CONTINUE) {
                     if (sId === 0 && !handshakeComplete) {
-                        log('Received CONTINUE on stream 0. Handshake complete!');
                         handshakeComplete = true;
+                        log('Handshake complete!');
+                        processQueue();
                     }
                 } else if (type === packet_types.DATA) {
-                    const text = new TextDecoder().decode(payload);
-                    respEl.value += text;
+                    if (sId === activeStreamId) {
+                        streamBuffer += new TextDecoder().decode(payload);
+                    }
                 } else if (type === packet_types.CLOSE) {
-                    const reason = payload.length > 0 ? payload[0] : 0;
-                    log('Received CLOSE packet. Reason: 0x' + reason.toString(16));
-                    log('Stream closed.');
+                    if (sId === activeStreamId) {
+                        processScrapedData();
+                        processQueue();
+                    }
                 }
             };
 
-            ws.onclose = () => log('WebSocket disconnected.');
+            ws.onclose = () => {
+                log('WebSocket disconnected.');
+                isCrawling = false;
+                stopSpinner();
+            };
             ws.onerror = () => log('WebSocket error.');
         }
 
-        sendBtn.onclick = () => {
-            respEl.value = '';
-            let host = document.getElementById('host').value;
+        // ---COMENT--- Process the next URL in the queue
+        function processQueue() {
+            if (!isCrawling) return;
             
-            host = host.replace('http://', '').replace('https://', '').split('/')[0].split(':')[0];
+            if (crawlQueue.length === 0) {
+                log('Crawl queue empty. Finished.');
+                isCrawling = false;
+                stopSpinner();
+                return;
+            }
+
+            let rawUrl = crawlQueue.shift();
+            // ---COMENT--- Normalize URL and prevent duplicates
+            if (!rawUrl.startsWith('http')) rawUrl = 'http://' + rawUrl;
+            if (crawledUrls.has(rawUrl)) {
+                processQueue();
+                return;
+            }
             
-            streamId = Math.floor(Math.random() * 1000) + 1;
-            handshakeComplete = false;
+            crawledUrls.add(rawUrl);
             
-            const httpReq = 'GET / HTTP/1.1\\r\\nHost: ' + host + '\\r\\nConnection: close\\r\\n\\r\\n';
-            pendingData = new TextEncoder().encode(httpReq);
+            try {
+                const url = new URL(rawUrl);
+                currentDomain = url.hostname;
+                const path = url.pathname === '/' ? '/' : url.pathname + url.search;
+                
+                streamBuffer = "";
+                activeStreamId = Math.floor(Math.random() * 10000) + 1;
+                
+                const hostBytes = new TextEncoder().encode(url.hostname);
+                const payload = new Uint8Array(3 + hostBytes.length);
+                const view = new DataView(payload.buffer);
+                view.setUint8(0, 0x01); // TCP
+                view.setUint16(1, 80, true); // Port 80
+                payload.set(hostBytes, 3);
+                
+                ws.send(makePacket(packet_types.CONNECT, activeStreamId, payload));
+                
+                const httpReq = 'GET ' + path + ' HTTP/1.1\\r\\nHost: ' + url.hostname + '\\r\\nConnection: close\\r\\n\\r\\n';
+                ws.send(makePacket(packet_types.DATA, activeStreamId, new TextEncoder().encode(httpReq)));
+                
+                log('Fetching: ' + rawUrl);
+            } catch (e) {
+                log('Invalid URL, skipping: ' + rawUrl);
+                processQueue();
+            }
+        }
+
+        // ---COMENT--- Parse scraped HTML, extract stats, and save to dataTxt
+        function processScrapedData() {
+            if (streamBuffer.length === 0) return;
             
+            // ---COMENT--- Split headers and body
+            const parts = streamBuffer.split('\\r\\n\\r\\n');
+            const headers = parts[0];
+            const body = parts.slice(1).join('\\r\\n\\r\\n');
+            
+            // ---COMENT--- Extract status code
+            let status = "Unknown";
+            const statusMatch = headers.match(/HTTP\\/[\\d.]+ (\\d+)/);
+            if (statusMatch) status = statusMatch[1];
+            
+            // ---COMENT--- Extract links for systematic crawling
+            const linkRegex = /href=["'](.*?)["']/g;
+            let match;
+            let linksFound = 0;
+            while ((match = linkRegex.exec(body)) !== null) {
+                let link = match[1];
+                if (link.startsWith('http')) {
+                    crawlQueue.push(link);
+                    linksFound++;
+                } else if (link.startsWith('/')) {
+                    crawlQueue.push('http://' + currentDomain + link);
+                    linksFound++;
+                }
+            }
+
+            // ---COMENT--- Format the data using the required labeling
+            dataTxt += "---COMENT--- Domain: " + currentDomain + "\\n";
+            dataTxt += "---COMENT--- Status: " + status + " | Bytes: " + body.length + " | Links Found: " + linksFound + "\\n";
+            dataTxt += "---COMENT--- HTML Content:\\n";
+            dataTxt += body + "\\n\\n========================================\\n\\n";
+            
+            pagesCrawled++;
+            counterEl.textContent = pagesCrawled;
+            log('Scraped ' + currentDomain + ' (Status: ' + status + ', Links: ' + linksFound + ')');
+        }
+
+        // ---COMENT--- Start Button Logic
+        startBtn.onclick = () => {
+            if (isCrawling) return;
+            if (crawlQueue.length === 0) {
+                log('No seeds to crawl. Upload a file or provide seeds.txt');
+                return;
+            }
+            isCrawling = true;
+            startSpinner();
+            log('Starting crawler...');
             if (!ws || ws.readyState !== 1) {
                 connectWs();
-                const interval = setInterval(() => {
-                    if (handshakeComplete) {
-                        clearInterval(interval);
-                        sendConnect(host);
-                    }
-                }, 100);
-            } else {
-                sendConnect(host);
+            } else if (handshakeComplete) {
+                processQueue();
             }
         };
 
-        connectWs();
+        // ---COMENT--- Stop Button Logic
+        stopBtn.onclick = () => {
+            isCrawling = false;
+            stopSpinner();
+            log('Crawler stopped by user.');
+        };
+
+        // ---COMENT--- Download Button Logic
+        downloadBtn.onclick = () => {
+            const blob = new Blob([dataTxt], { type: 'text/plain' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'data.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            log('Downloaded data.txt');
+        };
+
+        // ---COMENT--- Initialize on load
+        stopSpinner();
+        loadDefaultSeeds();
     </script>
 </body>
 </html>`;
