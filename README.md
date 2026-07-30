@@ -25,6 +25,7 @@
 - [x] Add Rate Limiting in editable JS File. (WIP)
 - [ ] Wisp v2.1??? (to lazy to add rn)
 - [ ] Add Implamentation.md and a proper Client
+- [ ] Add Plugins for JSON, CSV input and output, Web Crawling, and LLM saerch
 
 <div align="center">
   <h2>Notes</h2>
