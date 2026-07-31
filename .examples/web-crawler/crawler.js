@@ -27,7 +27,6 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
     <textarea id="log" rows="10" readonly style="width: 100%;"></textarea>
 
     <script>
-        // ---COMENT--- UI Element References
         const logEl = document.getElementById('log');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
@@ -36,7 +35,6 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
         const counterEl = document.getElementById('counter');
         const spinnerEl = document.getElementById('spinner');
 
-        // ---COMENT--- Crawler State Variables
         let ws;
         let streamId = 1;
         let handshakeComplete = false;
@@ -50,7 +48,6 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
         let currentDomain = "";
         let spinnerInterval;
 
-        // ---COMENT--- Wisp Protocol Packet Types
         const packet_types = {
             CONNECT: 0x01, DATA: 0x02, CONTINUE: 0x03, CLOSE: 0x04
         };
@@ -61,14 +58,14 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
             logEl.scrollTop = logEl.scrollHeight;
         }
 
-        // ---COMENT--- Spinner Animation Logic
         function startSpinner() {
-            const chars = ['|', '/', '-', '\\'];
+            const chars = ['|', '/', '-', '\\\\'];
             let i = 0;
             spinnerInterval = setInterval(() => {
                 spinnerEl.textContent = chars[i++ % chars.length];
             }, 100);
         }
+        
         function stopSpinner() {
             clearInterval(spinnerInterval);
             spinnerEl.textContent = 'Idle';
@@ -83,9 +80,8 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
             return buf;
         }
 
-        // ---COMENT--- Attempt to load seeds.txt automatically on page load
         function loadDefaultSeeds() {
-            fetch('seeds.txt')
+            fetch('/seeds.txt')
                 .then(res => {
                     if (!res.ok) throw new Error('File not found');
                     return res.text();
@@ -97,7 +93,6 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
                 .catch(() => log('No local seeds.txt found. Please upload a file.'));
         }
 
-        // ---COMENT--- Handle manual seed file upload
         uploadBtn.onchange = (event) => {
             const file = event.target.files[0];
             if (!file) return;
@@ -114,7 +109,6 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
             crawlQueue = crawlQueue.concat(urls);
         }
 
-        // ---COMENT--- WebSocket Connection Setup
         function connectWs() {
             const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/';
             log('Connecting to ' + wsUrl);
@@ -154,10 +148,10 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
                 isCrawling = false;
                 stopSpinner();
             };
+            
             ws.onerror = () => log('WebSocket error.');
         }
 
-        // ---COMENT--- Process the next URL in the queue
         function processQueue() {
             if (!isCrawling) return;
             
@@ -169,7 +163,7 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
             }
 
             let rawUrl = crawlQueue.shift();
-            // ---COMENT--- Normalize URL and prevent duplicates
+            
             if (!rawUrl.startsWith('http')) rawUrl = 'http://' + rawUrl;
             if (crawledUrls.has(rawUrl)) {
                 processQueue();
@@ -189,8 +183,8 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
                 const hostBytes = new TextEncoder().encode(url.hostname);
                 const payload = new Uint8Array(3 + hostBytes.length);
                 const view = new DataView(payload.buffer);
-                view.setUint8(0, 0x01); // TCP
-                view.setUint16(1, 80, true); // Port 80
+                view.setUint8(0, 0x01); 
+                view.setUint16(1, 80, true); 
                 payload.set(hostBytes, 3);
                 
                 ws.send(makePacket(packet_types.CONNECT, activeStreamId, payload));
@@ -205,21 +199,17 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
             }
         }
 
-        // ---COMENT--- Parse scraped HTML, extract stats, and save to dataTxt
         function processScrapedData() {
             if (streamBuffer.length === 0) return;
             
-            // ---COMENT--- Split headers and body
             const parts = streamBuffer.split('\\r\\n\\r\\n');
             const headers = parts[0];
             const body = parts.slice(1).join('\\r\\n\\r\\n');
             
-            // ---COMENT--- Extract status code
             let status = "Unknown";
             const statusMatch = headers.match(/HTTP\\/[\\d.]+ (\\d+)/);
             if (statusMatch) status = statusMatch[1];
             
-            // ---COMENT--- Extract links for systematic crawling
             const linkRegex = /href=["'](.*?)["']/g;
             let match;
             let linksFound = 0;
@@ -234,7 +224,6 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
                 }
             }
 
-            // ---COMENT--- Format the data using the required labeling
             dataTxt += "---COMENT--- Domain: " + currentDomain + "\\n";
             dataTxt += "---COMENT--- Status: " + status + " | Bytes: " + body.length + " | Links Found: " + linksFound + "\\n";
             dataTxt += "---COMENT--- HTML Content:\\n";
@@ -245,7 +234,6 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
             log('Scraped ' + currentDomain + ' (Status: ' + status + ', Links: ' + linksFound + ')');
         }
 
-        // ---COMENT--- Start Button Logic
         startBtn.onclick = () => {
             if (isCrawling) return;
             if (crawlQueue.length === 0) {
@@ -262,14 +250,12 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
             }
         };
 
-        // ---COMENT--- Stop Button Logic
         stopBtn.onclick = () => {
             isCrawling = false;
             stopSpinner();
             log('Crawler stopped by user.');
         };
 
-        // ---COMENT--- Download Button Logic
         downloadBtn.onclick = () => {
             const blob = new Blob([dataTxt], { type: 'text/plain' });
             const a = document.createElement('a');
@@ -281,7 +267,6 @@ export const CRAWLER_HTML = `<!DOCTYPE html>
             log('Downloaded data.txt');
         };
 
-        // ---COMENT--- Initialize on load
         stopSpinner();
         loadDefaultSeeds();
     </script>
