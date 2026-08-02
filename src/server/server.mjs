@@ -4,11 +4,11 @@ import { WSProxyConnection } from "./wsproxy.mjs";
 const HTML_PAGE = `<!DOCTYPE html>
 <html>
 <head>
-  <title>Wisp Server Tester</title>
+  <title>Bare JS Wisp Server</title>
   <meta charset="utf-8">
 </head>
 <body>
-  <h1>Wisp V1 Server Test</h1>
+  <h1>Bare Js Wisp Server (V1 Wisp Implamentation)</h1>
 <div>
   <label>Wisp Server URL: 
     <input type="text" id="serverUrl" value="" size="50">
