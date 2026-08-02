@@ -1,5 +1,4 @@
 import { connect } from "cloudflare:sockets";
-import { Buffer } from "node:buffer";
 
 export class WSProxyConnection {
   static async handle(request, path) {
@@ -13,27 +12,34 @@ export class WSProxyConnection {
     server.accept();
 
     (async () => {
-      let tcpSocket, writer, reader;
+      let writer, reader;
       try {
-        tcpSocket = connect({ hostname, port });
+        const tcpSocket = connect({ hostname, port });
+        
+        // Await the connection opening so it doesn't crash on write
+        await tcpSocket.opened;
+        
         writer = tcpSocket.writable.getWriter();
         reader = tcpSocket.readable.getReader();
 
         server.addEventListener("message", async (event) => {
           try {
+            if (typeof event.data === "string") return;
+            const buf = new Uint8Array(event.data);
             await writer.ready;
-            await writer.write(event.data);
+            await writer.write(buf);
           } catch (e) {}
         });
 
         server.addEventListener("close", async () => {
-          if (writer) await writer.close().catch(() => {});
+          try { if (writer) await writer.close(); } catch (e) {}
         });
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          server.send(value);
+          // Send strict ArrayBuffer
+          server.send(value.buffer);
         }
       } catch (e) {
         // Connection failure or network error
