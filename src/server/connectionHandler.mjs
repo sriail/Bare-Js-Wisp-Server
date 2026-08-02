@@ -51,14 +51,17 @@ export class ConnectionHandler {
     const port = payload.readUInt16LE(1);
     const hostname = payload.subarray(3).toString("utf-8");
 
-    // Cloudflare Workers do not natively support UDP outbound sockets
     if (streamType === stream_types.UDP) {
-      this.sendClose(streamId, 0x41); // 0x41 - Invalid information / unsupported
+      this.sendClose(streamId, 0x41);
       return;
     }
 
     try {
       const tcpSocket = connect({ hostname, port });
+      
+      // Crucial: Wait for the TCP socket to actually establish the connection
+      await tcpSocket.opened;
+      
       const writer = tcpSocket.writable.getWriter();
       const reader = tcpSocket.readable.getReader();
 
@@ -70,12 +73,10 @@ export class ConnectionHandler {
       };
       this.streams.set(streamId, stream);
 
-      // Start reading from TCP and sending to WS
       this.startReadLoop(streamId, stream);
-
-      // Send initial CONTINUE packet for this specific stream
       this.sendContinue(streamId, 8);
     } catch (e) {
+      console.error("Connect error:", e);
       this.sendClose(streamId, 0x44); // 0x44 - Connection refused
     }
   }
@@ -92,9 +93,9 @@ export class ConnectionHandler {
         this.ws.send(Buffer.concat([header, Buffer.from(value)]));
       }
     } catch (e) {
-      // Network error
+      console.error("Read loop error:", e);
     }
-    this.sendClose(streamId, 0x02); // Voluntary closure
+    this.sendClose(streamId, 0x02);
     this.cleanupStream(streamId);
   }
 
@@ -105,11 +106,10 @@ export class ConnectionHandler {
     try {
       await stream.writer.ready;
       await stream.writer.write(payload);
-      
-      // Tell the client they can send more data
       this.sendContinue(streamId, 8);
     } catch (e) {
-      this.sendClose(streamId, 0x03); // Network error
+      console.error("Data write error:", e);
+      this.sendClose(streamId, 0x03);
       this.cleanupStream(streamId);
     }
   }
