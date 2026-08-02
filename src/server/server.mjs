@@ -31,7 +31,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   const serverInput = document.getElementById('serverUrl');
   if (serverInput) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    serverInput.value = `${protocol}
+    serverInput.value = `;{protocol}
   }
   // ---------------------------------
 
