@@ -102,11 +102,17 @@ export class ConnectionHandler {
       fetchInitiated: false,
       headerBuffer: new Uint8Array(0),
       bodyController: null,
-      bodyStream: new ReadableStream({
-        start(controller) { stream.bodyController = controller; }
-      }),
+      bodyStream: null,
       closed: false,
     };
+    
+    // Create ReadableStream AFTER stream is defined to prevent null reference
+    stream.bodyStream = new ReadableStream({
+      start(controller) { 
+        stream.bodyController = controller; 
+      }
+    });
+    
     this.streams.set(streamId, stream);
     this.sendContinue(streamId, 8);
   }
