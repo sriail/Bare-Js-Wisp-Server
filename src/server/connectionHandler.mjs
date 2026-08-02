@@ -10,15 +10,20 @@ export class ConnectionHandler {
 
   async init() {
     // Send initial CONTINUE packet (Stream ID: 0, Buffer Remaining: 8)
-    const buf = new Uint8Array(9);
-    const view = new DataView(buf.buffer);
-    buf[0] = packet_types.CONTINUE;
-    view.setUint32(1, 0, true); // Stream ID 0
-    view.setUint32(5, 8, true); // Buffer size 8
-    this.ws.send(buf);
+    this.sendContinue(0, 8);
 
     this.ws.addEventListener("message", (event) => {
-      this.onMessage(event.data).catch((err) => console.error("Handler error:", err));
+      // Cloudflare Workers expects ArrayBuffer
+      let data = event.data;
+      if (data instanceof ArrayBuffer) {
+        // good
+      } else if (ArrayBuffer.isView(data)) {
+        data = new Uint8Array(data).buffer;
+      } else if (typeof data === "string") {
+        data = new TextEncoder().encode(data).buffer;
+      }
+      
+      this.onMessage(data).catch((err) => console.error("Handler error:", err));
     });
 
     this.ws.addEventListener("close", () => this.onClose());
@@ -58,9 +63,9 @@ export class ConnectionHandler {
     }
 
     try {
-      const tcpSocket = connect({ hostname, port });
+      // Using string format for connect is more robust in CF Workers
+      const tcpSocket = connect(`${hostname}:${port}`);
       
-      // Immediately get reader and writer. The socket will connect in the background.
       const writer = tcpSocket.writable.getWriter();
       const reader = tcpSocket.readable.getReader();
 
@@ -72,9 +77,7 @@ export class ConnectionHandler {
       };
       this.streams.set(streamId, stream);
 
-      // Start reading. If the connection fails, the error is caught here.
       this.startReadLoop(streamId, stream);
-      
       this.sendContinue(streamId, 8);
     } catch (e) {
       console.error("Connect error:", e.message || e);
@@ -86,17 +89,19 @@ export class ConnectionHandler {
     try {
       while (!stream.closed) {
         const { done, value } = await stream.reader.read();
-        if (done) break;
+        if (done || !value) break;
 
         const header = new Uint8Array(5);
-        const view = new DataView(header.buffer);
+        const headerView = new DataView(header.buffer);
         header[0] = packet_types.DATA;
-        view.setUint32(1, streamId, true);
+        headerView.setUint32(1, streamId, true);
         
         const out = new Uint8Array(header.length + value.length);
         out.set(header, 0);
         out.set(value, header.length);
-        this.ws.send(out);
+        
+        // Strictly send ArrayBuffer to avoid CF WS TypeErrors
+        this.ws.send(out.buffer);
       }
     } catch (e) {
       console.error("Read loop error:", e.message || e);
@@ -142,7 +147,7 @@ export class ConnectionHandler {
     buf[0] = packet_types.CLOSE;
     view.setUint32(1, streamId, true);
     buf[5] = reason;
-    try { this.ws.send(buf); } catch (e) {}
+    try { this.ws.send(buf.buffer); } catch (e) {}
   }
 
   sendContinue(streamId, remaining) {
@@ -151,7 +156,7 @@ export class ConnectionHandler {
     buf[0] = packet_types.CONTINUE;
     view.setUint32(1, streamId, true);
     view.setUint32(5, remaining, true);
-    try { this.ws.send(buf); } catch (e) {}
+    try { this.ws.send(buf.buffer); } catch (e) {}
   }
 
   onClose() {
