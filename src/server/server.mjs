@@ -32,7 +32,6 @@ const HTML_PAGE = `<!DOCTYPE html>
   if (serverInput) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     serverInput.value = `;{protocol}
-  }
   // ---------------------------------
 
   document.getElementById('testBtn').addEventListener('click', () => {
