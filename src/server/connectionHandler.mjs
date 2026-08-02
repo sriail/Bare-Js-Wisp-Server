@@ -13,25 +13,17 @@ export class ConnectionHandler {
     this.sendContinue(0, 8);
 
     this.ws.addEventListener("message", (event) => {
-      // Cloudflare Workers expects ArrayBuffer
-      let data = event.data;
-      if (data instanceof ArrayBuffer) {
-        // good
-      } else if (ArrayBuffer.isView(data)) {
-        data = new Uint8Array(data).buffer;
-      } else if (typeof data === "string") {
-        data = new TextEncoder().encode(data).buffer;
-      }
+      if (typeof event.data === "string") return; // Wisp doesn't use strings
       
-      this.onMessage(data).catch((err) => console.error("Handler error:", err));
+      const buf = new Uint8Array(event.data);
+      this.onMessage(buf).catch((err) => console.error("Handler error:", err));
     });
 
     this.ws.addEventListener("close", () => this.onClose());
     this.ws.addEventListener("error", () => this.onClose());
   }
 
-  async onMessage(data) {
-    const buf = new Uint8Array(data);
+  async onMessage(buf) {
     if (buf.length < 5) return;
 
     const view = new DataView(buf.buffer);
@@ -63,8 +55,10 @@ export class ConnectionHandler {
     }
 
     try {
-      // Using string format for connect is more robust in CF Workers
-      const tcpSocket = connect(`${hostname}:${port}`);
+      const tcpSocket = connect({ hostname, port });
+      
+      // MUST await this, otherwise writing data immediately will throw a network error
+      await tcpSocket.opened;
       
       const writer = tcpSocket.writable.getWriter();
       const reader = tcpSocket.readable.getReader();
@@ -100,7 +94,7 @@ export class ConnectionHandler {
         out.set(header, 0);
         out.set(value, header.length);
         
-        // Strictly send ArrayBuffer to avoid CF WS TypeErrors
+        // Send strict ArrayBuffer
         this.ws.send(out.buffer);
       }
     } catch (e) {
