@@ -1,7 +1,9 @@
 # wrangler.toml
 name = "bare-js-wisp-server"
-main = "src/connections.js"
-compatibility_date = "2026-06-16"
+main = "src/server/index.js"
+compatibility_date = "2023-08-01"
+
+compatibility_flags = ["nodejs_compat"]
 
 [assets]
 directory = "./src"

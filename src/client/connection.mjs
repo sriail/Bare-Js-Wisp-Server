@@ -1,5 +1,4 @@
-import * as compat from "../compat.mjs";
-
+import * as compat from "./compat.mjs";
 import {
   packet_classes,
   packet_types,
@@ -10,9 +9,8 @@ import {
   DataPayload, 
   ClosePayload,
   InfoPayload
-} from "../packet.mjs";
-
-import { MOTDExtension, UDPExtension, serialize_extensions, parse_extensions } from "../extensions.mjs";
+} from "./packet.mjs";
+import { MOTDExtension, UDPExtension, serialize_extensions, parse_extensions } from "./extensions.mjs";
 
 class ClientStream {
   constructor(hostname, port, websocket, buffer_size, stream_id, connection, stream_type) {
@@ -32,42 +30,32 @@ class ClientStream {
   }
 
   send(data) {
-    //note: udp shouldn't buffer anything
     if (this.buffer_size > 0 || !this.open || this.stream_type === stream_types.UDP) {
-      //construct and send a DATA packet
       let packet = new WispPacket({
         type: packet_types.DATA,
         stream_id: this.stream_id,
-        payload: new DataPayload({
-          data: new WispBuffer(data)
-        })
+        payload: new DataPayload({ data: new WispBuffer(data) })
       });
       this.ws.send(packet.serialize().bytes);
       this.buffer_size--;
-    }
-    else { //server is slow, don't send data yet
+    } else {
       this.send_buffer.push(data);
     }
   }
 
-  //handle receiving a CONTINUE packet
   continue_received(buffer_size) {
     this.buffer_size = buffer_size;
-    //send buffered data now
     while (this.buffer_size > 0 && this.send_buffer.length > 0) {
       this.send(this.send_buffer.shift());
     }
   }
 
-  //construct and send a CLOSE packet
   close(reason = 0x01) {
     if (!this.open) return;
     let packet = new WispPacket({
       type: packet_types.CLOSE,
       stream_id: this.stream_id,
-      payload: new ClosePayload({
-        reason: reason
-      })
+      payload: new ClosePayload({ reason: reason })
     });
     this.ws.send(packet.serialize().bytes);
     this.open = false;
@@ -163,7 +151,6 @@ export class ClientConnection {
     this.active_streams[stream_id] = stream;
     stream.open = this.connected;
 
-    //construct CONNECT packet
     let packet = new WispPacket({
       type: packet_types.CONNECT,
       stream_id: stream_id,
@@ -198,34 +185,6 @@ export class ClientConnection {
           this.wisp_version = 1;
         }
       }
-      
-      if (packet.type === packet_types.INFO && this.wisp_version === 2) {
-        let server_extensions = parse_extensions(packet.payload.extensions, this.wisp_extensions, "server");
-        for (let server_ext of server_extensions) {
-          for (let client_ext of this.wisp_extensions) {
-            if (server_ext.id === client_ext.id) {
-              this.server_exts[server_ext.id] = server_ext;
-              this.client_exts[client_ext.id] = client_ext;
-            }
-          }
-        }
-
-        this.info_received = true; 
-        this.server_motd = this.server_exts[MOTDExtension.id]?.payload?.message;
-        this.udp_enabled = !!this.server_exts[UDPExtension.id];
-
-        let ext_buffer = serialize_extensions(this.wisp_extensions);
-        let info_packet = new WispPacket({
-          type: InfoPayload.type,
-          stream_id: 0,
-          payload: new InfoPayload({
-            major_ver: this.wisp_version,
-            minor_ver: 0,
-            extensions: ext_buffer
-          })
-        });
-        this.ws.send(info_packet.serialize().bytes);
-      }
       return;
     }
 
@@ -236,17 +195,11 @@ export class ClientConnection {
 
     if (packet.type === packet_types.DATA) {
       stream.onmessage(packet.payload_bytes.bytes);
-    }
-
-    else if (packet.type === packet_types.CONTINUE) { //other CONTINUE packets
+    } else if (packet.type === packet_types.CONTINUE) {
       stream.continue_received(packet.payload.buffer_remaining);
-    }
-
-    else if (packet.type === packet_types.CLOSE) {
+    } else if (packet.type === packet_types.CLOSE) {
       this.close_stream(stream, packet.payload.reason);
-    }
-
-    else {
+    } else {
       console.warn(`wisp client warning: received an invalid packet of type ${packet.type}`);
     }
   }
@@ -259,4 +212,3 @@ export class ClientConnection {
     }
   }
 }
-

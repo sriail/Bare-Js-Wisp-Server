@@ -1,234 +1,109 @@
-//shared packet parsing / serialization code
-
-const text_encoder = new TextEncoder();
-const encode_text = text_encoder.encode.bind(text_encoder);
-const text_decoder = new TextDecoder();
-const decode_text = text_decoder.decode.bind(text_decoder);
-
-export class WispBuffer {
-  constructor(data) {
-    if (data instanceof Uint8Array) {
-      this.from_array(data);
-    }
-    else if (typeof data === "number") {
-      this.from_array(new Uint8Array(data));
-    }
-    else if (typeof data === "string") {
-      this.from_array(encode_text(data));
-    }
-    else {
-      console.trace();
-      throw "invalid data type passed to wisp buffer constructor";
-    }
-  }
-
-  from_array(bytes) {
-    this.size = bytes.length;
-    this.bytes = bytes;
-    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); 
-  }
-
-  concat(buffer) {
-    let new_buffer = new WispBuffer(this.size + buffer.size);
-    new_buffer.bytes.set(this.bytes, 0);
-    new_buffer.bytes.set(buffer.bytes, this.size);
-    return new_buffer;
-  }
-
-  slice(index, size) {
-    let bytes_slice = this.bytes.slice(index, size);
-    return new WispBuffer(bytes_slice);
-  }
-
-  get_string() {
-    return text_decoder.decode(this.bytes);
-  }
-}
-
-export class WispPacket {
-  static min_size = 5;
-  constructor({type, stream_id, payload, payload_bytes }) {
-    this.type = type;
-    this.stream_id = stream_id;
-    this.payload_bytes = payload_bytes;
-    this.payload = payload;
-  }
-  static parse(buffer) {
-    return new WispPacket({
-      type: buffer.view.getUint8(0),
-      stream_id: buffer.view.getUint32(1, true),
-      payload_bytes: buffer.slice(5)
-    });
-  }
-  static parse_all(buffer) {
-    if (buffer.size < WispPacket.min_size) {
-      throw TypeError("packet too small");
-    }
-    let packet = WispPacket.parse(buffer);
-    let payload_class = packet_classes[packet.type];
-    if (typeof payload_class === "undefined") {
-      throw TypeError("invalid packet type");
-    }
-    if (packet.payload_bytes.size < payload_class.size) {
-      throw TypeError("payload too small");
-    }
-    packet.payload = payload_class.parse(packet.payload_bytes);
-    return packet;
-  }
-  serialize() {
-    let buffer = new WispBuffer(5);
-    buffer.view.setUint8(0, this.type);
-    buffer.view.setUint32(1, this.stream_id, true);
-    buffer = buffer.concat(this.payload.serialize());
-    return buffer;
-  }
-}
-
-export class ConnectPayload {
-  static min_size = 3;
-  static type = 0x01;
-  static name = "CONNECT";
-  constructor({stream_type, port, hostname}) {
-    this.stream_type = stream_type;
-    this.port = port;
-    this.hostname = hostname;
-  }
-  static parse(buffer) {
-    return new ConnectPayload({
-      stream_type: buffer.view.getUint8(0),
-      port: buffer.view.getUint16(1, true),
-      hostname: decode_text(buffer.slice(3).bytes)
-    });
-  }
-  serialize() {
-    let buffer = new WispBuffer(3);
-    buffer.view.setUint8(0, this.stream_type);
-    buffer.view.setUint16(1, this.port, true);
-    buffer = buffer.concat(new WispBuffer(this.hostname));
-    return buffer;
-  }
-}
-
-export class DataPayload {
-  static min_size = 0;
-  static type = 0x02;
-  static name = "DATA";
-  constructor({data}) {
-    this.data = data;
-  }
-  static parse(buffer) {
-    return new DataPayload({
-      data: buffer
-    });
-  }
-  serialize() {
-    return this.data;
-  }
-}
-
-export class ContinuePayload {
-  static type = 0x03;
-  static name = "CONTINUE";
-  constructor({buffer_remaining}) {
-    this.buffer_remaining = buffer_remaining;
-  }
-  static parse(buffer) {
-    return new ContinuePayload({
-      buffer_remaining: buffer.view.getUint32(0, true),
-    });
-  }
-  serialize() {
-    let buffer = new WispBuffer(4);
-    buffer.view.setUint32(0, this.buffer_remaining, true);
-    return buffer;
-  }
-}
-
-export class ClosePayload {
-  static min_size = 1;
-  static type = 0x04;
-  static name = "CLOSE";
-  constructor({reason}) {
-    this.reason = reason;
-  }
-  static parse(buffer) {
-    return new ClosePayload({
-      reason: buffer.view.getUint8(0),
-    });
-  }
-  serialize() {
-    let buffer = new WispBuffer(1);
-    buffer.view.setUint8(0, this.reason);
-    return buffer;
-  }
-}
-
-export class InfoPayload {
-  static min_size = 2;
-  static type = 0x05;
-  static name = "INFO";
-  constructor({major_ver, minor_ver, extensions}) {
-    this.major_ver = major_ver;
-    this.minor_ver = minor_ver;
-    this.extensions = extensions;
-  }
-  static parse(buffer) {
-    return new InfoPayload({
-      major_ver: buffer.view.getUint8(0),
-      minor_ver: buffer.view.getUint8(1),
-      extensions: buffer.slice(2)
-    });
-  }
-  serialize() {
-    let buffer = new WispBuffer(2);
-    buffer.view.setUint8(0, this.major_ver);
-    buffer.view.setUint8(1, this.minor_ver);
-    return buffer.concat(this.extensions);
-  }
-}
-
-export const packet_classes = {
-  0x01: ConnectPayload, 
-  0x02: DataPayload, 
-  0x03: ContinuePayload, 
-  0x04: ClosePayload,
-  0x05: InfoPayload
-}
-
 export const packet_types = {
   CONNECT: 0x01,
   DATA: 0x02,
   CONTINUE: 0x03,
   CLOSE: 0x04,
-  INFO: 0x05
-}
+  INFO: 0x10
+};
+
+export const packet_classes = {
+  0x01: { name: "CONNECT" },
+  0x02: { name: "DATA" },
+  0x03: { name: "CONTINUE" },
+  0x04: { name: "CLOSE" },
+  0x10: { name: "INFO" }
+};
 
 export const stream_types = {
   TCP: 0x01,
   UDP: 0x02
+};
+
+export class WispBuffer {
+  constructor(data) {
+    this.bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    this.offset = 0;
+    this.view = new DataView(this.bytes.buffer);
+  }
+  get size() { return this.bytes.byteLength; }
+  readUint8() { return this.bytes[this.offset++]; }
+  readUint16() { const v = this.view.getUint16(this.offset, true); this.offset += 2; return v; }
+  readUint32() { const v = this.view.getUint32(this.offset, true); this.offset += 4; return v; }
+  readBytes(n) { const v = this.bytes.slice(this.offset, this.offset + n); this.offset += n; return v; }
+  writeUint8(v) { this.bytes[this.offset++] = v; }
+  writeUint16(v) { this.view.setUint16(this.offset, v, true); this.offset += 2; }
+  writeUint32(v) { this.view.setUint32(this.offset, v, true); this.offset += 4; }
+  writeBytes(v) { this.bytes.set(v, this.offset); this.offset += v.length; }
+  writeString(v) { const enc = new TextEncoder().encode(v); this.writeBytes(enc); return enc.length; }
+  readString(n) { return new TextDecoder().decode(this.readBytes(n)); }
 }
 
-export const close_reasons = {
-  //client/server close reasons
-  Unknown: 0x01,
-  Voluntary: 0x02,
-  NetworkError: 0x03,
-  IncompatibleExtensions: 0x04,
+class Payload {
+  constructor(args) { Object.assign(this, args); }
+  serialize() {}
+}
 
-  //server only close reasons
-  InvalidInfo: 0x41, 
-  UnreachableHost: 0x42,
-  NoResponse: 0x43,
-  ConnRefused: 0x44,
-  TransferTimeout: 0x47,
-  HostBlocked: 0x48,
-  ConnThrottled: 0x49,
+export class ConnectPayload extends Payload {
+  serialize() {
+    const enc = new TextEncoder().encode(this.hostname);
+    const buf = new WispBuffer(new Uint8Array(3 + enc.length));
+    buf.writeUint8(this.stream_type);
+    buf.writeUint16(this.port);
+    buf.writeBytes(enc);
+    return buf;
+  }
+}
 
-  //client only close reasons
-  ClientError: 0x81,
+export class DataPayload extends Payload {
+  serialize() { 
+    return this.data instanceof WispBuffer ? this.data : new WispBuffer(this.data);
+  }
+}
 
-  //extension specific close reasons
-  AuthBadPassword: 0xc0,
-  AuthBadSignature: 0xc1,
-  AuthMissingCredentials: 0xc2
+export class ClosePayload extends Payload {
+  serialize() { const b = new WispBuffer(new Uint8Array(1)); b.writeUint8(this.reason); return b; }
+}
+
+export class InfoPayload extends Payload {
+  serialize() { return this.extensions; }
+}
+
+export class WispPacket {
+  constructor({ type, stream_id, payload }) {
+    this.type = type;
+    this.stream_id = stream_id;
+    this.payload = payload;
+  }
+  static get min_size() { return 5; }
+  static parse_all(buf) {
+    const type = buf.readUint8();
+    const stream_id = buf.readUint32();
+    const p_bytes = buf.readBytes(buf.size - 5);
+    const p_buf = new WispBuffer(p_bytes);
+    let payload = {};
+    
+    if (type === packet_types.CONNECT) {
+      payload = new ConnectPayload({
+        stream_type: p_buf.readUint8(),
+        port: p_buf.readUint16(),
+        hostname: p_buf.readString(p_bytes.length - 3)
+      });
+    } else if (type === packet_types.CONTINUE) {
+      payload = { buffer_remaining: p_buf.readUint32() };
+    } else if (type === packet_types.CLOSE) {
+      payload = new ClosePayload({ reason: p_buf.readUint8() });
+    } else if (type === packet_types.DATA) {
+      payload = new DataPayload({ data: new WispBuffer(p_bytes) });
+    }
+    return { type, stream_id, payload, payload_bytes: new WispBuffer(p_bytes) };
+  }
+  serialize() {
+    const p_buf = this.payload.serialize();
+    const p_size = p_buf.size;
+    const buf = new WispBuffer(new Uint8Array(5 + p_size));
+    buf.writeUint8(this.type);
+    buf.writeUint32(this.stream_id);
+    buf.writeBytes(p_buf.bytes);
+    return buf;
+  }
 }
