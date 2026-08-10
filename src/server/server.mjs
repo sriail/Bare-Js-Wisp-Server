@@ -111,6 +111,16 @@ export class WispServer {
       return WispHandler.handle(request);
     }
 
+  if (path.startsWith("/proxy/")) {
+      const targetUrl = decodeURIComponent(path.replace("/proxy/", ""));
+      try {
+        const proxyReq = new Request(targetUrl, request);
+        return await fetch(proxyReq);
+      } catch (e) {
+        return new Response("Proxy error: " + e.message, { status: 500 });
+      }
+    }
+    
     return new Response(HTML_PAGE, {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
