@@ -19,7 +19,17 @@ export class ConnectionHandler {
   }
 
   async init() {
-    // Send initial CONTINUE packet (Stream ID: 0, Buffer Remaining: 8)
+    // Send Wisp V2 INFO packet (Type 0x10) so Epoxy stays in V2 mode
+    const infoBuf = new Uint8Array(8);
+    const infoView = new DataView(infoBuf.buffer);
+    infoBuf[0] = 0x10; // INFO
+    infoView.setUint32(1, 0, true); // Stream ID 0
+    infoBuf[5] = 2; // major_ver
+    infoBuf[6] = 0; // minor_ver
+    infoBuf[7] = 0; // extension count
+    this.ws.send(infoBuf);
+
+    // Send V1 CONTINUE packet (Stream ID: 0, Buffer Remaining: 8)
     this.sendContinue(0, 8);
 
     this.ws.addEventListener("message", (event) => {
@@ -49,6 +59,8 @@ export class ConnectionHandler {
       case packet_types.CLOSE:
         this.handleClose(streamId);
         break;
+      case 0x10: // Ignore V2 INFO packets sent back by the client
+        break;
     }
   }
 
@@ -62,10 +74,11 @@ export class ConnectionHandler {
       return;
     }
 
-    // Cloudflare Workers block TCP connect() on ports 80 and 443.
-    // We must intercept these and use fetch() instead.
-    if (port === 80 || port === 443) {
-      this.setupHttpStream(streamId, hostname, port);
+    // Intercept HTTP/HTTPS traffic
+    // Stream type 0x03 is TLS. Port 443 is HTTPS. Port 80 is HTTP.
+    if (streamType === 0x03 || port === 443 || port === 80) {
+      const protocol = (streamType === 0x03 || port === 443) ? "https:" : "http:";
+      this.setupHttpStream(streamId, hostname, port, protocol);
       return;
     }
 
@@ -94,19 +107,20 @@ export class ConnectionHandler {
     }
   }
 
-  setupHttpStream(streamId, hostname, port) {
+  setupHttpStream(streamId, hostname, port, protocol) {
     const stream = {
       type: 'http',
       hostname: hostname,
       port: port,
+      protocol: protocol,
       fetchInitiated: false,
       headerBuffer: new Uint8Array(0),
       bodyController: null,
       bodyStream: null,
+      ws: null,
       closed: false,
     };
     
-    // Create ReadableStream AFTER stream is defined to prevent null reference
     stream.bodyStream = new ReadableStream({
       start(controller) { 
         stream.bodyController = controller; 
@@ -141,9 +155,13 @@ export class ConnectionHandler {
   async handleHttpData(streamId, stream, payload) {
     if (stream.closed) return;
 
-    // If fetch already started, pipe data into the fetch body stream
+    // If fetch already started, pipe data into the fetch body stream or WebSocket
     if (stream.fetchInitiated) {
-      stream.bodyController.enqueue(payload);
+      if (stream.ws) {
+        stream.ws.send(payload);
+      } else {
+        stream.bodyController.enqueue(payload);
+      }
       this.sendContinue(streamId, 8);
       return;
     }
@@ -188,23 +206,47 @@ export class ConnectionHandler {
       headers.set("Host", stream.hostname);
     }
 
-    const protocol = stream.port === 443 ? "https:" : "http:";
-    const url = `${protocol}//${stream.hostname}${path}`;
+    const url = `${stream.protocol}//${stream.hostname}${path}`;
 
     try {
       const fetchOptions = {
         method: method,
         headers: headers,
-        redirect: 'manual' // Pass redirects back to the client raw
+        redirect: 'manual'
       };
 
       if (method !== "GET" && method !== "HEAD") {
         fetchOptions.body = stream.bodyStream;
       } else {
-        stream.bodyController.close(); // Close unused body stream
+        stream.bodyController.close();
       }
 
       const response = await fetch(url, fetchOptions);
+
+      // Handle WebSocket proxying
+      if (response.webSocket) {
+        const ws = response.webSocket;
+        ws.accept();
+        
+        ws.addEventListener("message", (event) => {
+          if (typeof event.data === "string") return;
+          this.sendDataPacket(streamId, new Uint8Array(event.data));
+        });
+        ws.addEventListener("close", () => {
+          this.sendClose(streamId, 0x02);
+          this.cleanupStream(streamId);
+        });
+
+        let rawResponse = `HTTP/1.1 101 Switching Protocols\r\n`;
+        response.headers.forEach((value, key) => {
+          rawResponse += `${key}: ${value}\r\n`;
+        });
+        rawResponse += "\r\n";
+        this.sendDataPacket(streamId, new TextEncoder().encode(rawResponse));
+
+        stream.ws = ws;
+        return;
+      }
 
       // Construct raw HTTP response
       let rawResponse = `HTTP/1.1 ${response.status} ${response.statusText}\r\n`;
@@ -228,13 +270,13 @@ export class ConnectionHandler {
       }
 
       stream.bodyController.close();
-      this.sendClose(streamId, 0x02); // Voluntary closure
+      this.sendClose(streamId, 0x02);
       this.cleanupStream(streamId);
 
     } catch (e) {
       console.error("Fetch error:", e.message);
       try { stream.bodyController.error(e); } catch(err) {}
-      this.sendClose(streamId, 0x44); // Connection refused
+      this.sendClose(streamId, 0x44);
       this.cleanupStream(streamId);
     }
   }
