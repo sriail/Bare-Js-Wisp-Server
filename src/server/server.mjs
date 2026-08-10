@@ -103,20 +103,21 @@ export class WispServer {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    if (upgradeHeader && upgradeHeader === "websocket") {
-      if (path.endsWith("/")) {
-        return WispHandler.handle(request);
-      } else {
+    // Handle WebSocket upgrades
+    if (upgradeHeader && upgradeHeader.toLowerCase() === "websocket") {
+      // If the path looks like a wsproxy endpoint (e.g. /host:port), route to WSProxy
+      const target = path.split("/").pop();
+      if (target.includes(":")) {
         return WSProxyConnection.handle(request, path);
       }
+      
+      return WispHandler.handle(request);
     }
 
-    if (path === "/" || path === "/test" || path === "/index.html") {
-      return new Response(HTML_PAGE, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
-    }
-
-    return new Response("Not Found", { status: 404 });
+    // For standard HTTP GET requests, return a simple plain text response
+    return new Response("Wisp V1 Server is running. Connect using a Wisp or Epoxy client.", {
+      status: 200,
+      headers: { "Content-Type": "text/plain" }
+    });
   }
 }
