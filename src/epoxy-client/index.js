@@ -562,18 +562,43 @@ ${val.stack}`;
         /**
    * @returns {Promise<void>}
    */
+                /**
+   * @returns {Promise<void>}
+   */
         replace_stream_provider() {
-            const ret = wasm.epoxyclient_replace_stream_provider(this.__wbg_ptr);
-            return takeObject(ret);
+            const originalFetch = globalThis.fetch;
+            const originalWebSocket = globalThis.WebSocket;
+            const self = this;
+
+            globalThis.fetch = async function(input, init) {
+                let target = typeof input === 'string' ? input : (input.url || input);
+                let httpUrl = self.transport.url.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+                let proxyUrl = httpUrl + "proxy/" + target;
+                return originalFetch(proxyUrl, init);
+            };
+
+            globalThis.WebSocket = function(url, protocols) {
+                try {
+                    let parsed = new URL(url);
+                    let port = parsed.port || (parsed.protocol === 'wss:' ? '443' : '80');
+                    let proxyUrl = self.transport.url + parsed.hostname + ":" + port;
+                    return new originalWebSocket(proxyUrl, protocols);
+                } catch (e) {
+                    return new originalWebSocket(url, protocols);
+                }
+            };
+
+            return Promise.resolve();
         }
         /**
    * @param {EpoxyUrlInput} url
    * @param {object} options
    * @returns {Promise<Response>}
    */
-        fetch(url, options) {
-            const ret = wasm.epoxyclient_fetch(this.__wbg_ptr, addHeapObject(url), addHeapObject(options));
-            return takeObject(ret);
+                fetch(url, options) {
+            let httpUrl = this.transport.url.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+            let proxyUrl = httpUrl + "proxy/" + url;
+            return fetch(proxyUrl, options);
         }
         /**
    * @param {EpoxyWispTransport} transport
